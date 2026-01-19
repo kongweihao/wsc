@@ -1,0 +1,21 @@
+{
+  "name": "wsc-submarine-cable-viewer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Static web app for 2D/3D submarine cable visualization using Vue 2, Element UI, ECharts, and ECharts-GL.",
+  "scripts": {
+    "start": "npx http-server . -p 8080",
+    "clean": "rimraf node_modules",
+    "lint": "echo \"No lint configured\""
+  },
+  "dependencies": {
+    "echarts": "^5.5.0",
+    "echarts-gl": "^2.0.9",
+    "element-ui": "^2.15.14",
+    "vue": "^2.7.16"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1",
+    "rimraf": "^5.0.5"
+  }
+}

@@ -1,0 +1,1 @@
+{"id":"taba-egypt","name":"Taba, Egypt","country":"Egypt","cables":[{"id":"coral-bridge","name":"Coral Bridge","rfs_year":2025,"is_planned":false,"landing_points":["aqaba-jordan","taba-egypt"]},{"id":"taba-aqaba","name":"Taba-Aqaba","rfs_year":1998,"is_planned":false,"landing_points":["aqaba-jordan","taba-egypt"]}],"landing_points":["taba-egypt","aqaba-jordan"]}

@@ -1,0 +1,2661 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+	<meta charset="UTF-8">
+	<title>全球海缆走线示意</title>
+	<!-- 避免 favicon.ico 404 -->
+	<link rel="icon"
+		href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' ry='12' fill='%230b1220'/%3E%3Cpath d='M12 32c0-10.5 9-18 20-18s20 7.5 20 18-9 18-20 18-20-7.5-20-18z' fill='%2348dbfb' fill-opacity='.65'/%3E%3Cpath d='M20 32c0-6 5.5-10 12-10s12 4 12 10-5.5 10-12 10-12-4-12-10z' fill='%23ffd666' fill-opacity='.9'/%3E%3C/svg%3E" />
+	<!-- Element UI 样式（用于图标）-->
+	<link rel="stylesheet" href="node_modules/element-ui/lib/theme-chalk/index.css">
+	<!-- 核心 JavaScript 库（阻塞加载，必须优先） -->
+	<script src="node_modules/vue/dist/vue.min.js"></script>
+	<script src="node_modules/element-ui/lib/index.js"></script>
+	<script src="node_modules/echarts/dist/echarts.min.js"></script>
+	<script src="node_modules/echarts-gl/dist/echarts-gl.min.js"></script>
+	<!-- 权益海缆数据 -->
+	<script src="海缆数据/quanyi.js"></script>
+
+	<!-- 数据文件（可延迟加载） -->
+	<!-- 英文版世界地图 -->
+	<!-- <script src="js/world.js"></script> -->
+	<!-- 汉化版标准世界地图 -->
+	<!-- <script src="js/worldZH.js"></script> -->
+	<!-- 以亚太为中心的英文版世界地图 -->
+	<!-- 数据文件（可延迟加载） -->
+	<script src="js/worldZH（以中国为中心）.js"></script>
+	<!-- 所有样式代码都在这 -->
+	<link rel="stylesheet" href="css/app.css">
+</head>
+
+<body>
+	<div id="app">
+		<div class="screen" :class="{ 'is-compact': isCompactMode, 'fullscreen-active': isMapFullscreen }" :style="!isCompactMode ? { gridTemplateColumns: leftColPct + '%' + ' ' + centerColPct + '%' + ' ' + rightColPct + '%' } : {}">
+			<!-- 左：操作控制台（大屏模式） --> 
+			<section class="panel left" v-if="!isCompactMode">
+				<div class="panel-header"><span class="accent"></span>操作控制台
+					<button class="inline-btn" style="float:right" @click.stop="resetAllFilters">全部重置</button>
+					<button class="inline-btn" style="float:right; margin-right:6px;" @click.stop="restartApp"><i class="el-icon-switch-button" aria-hidden="true" style="margin-right:4px;"></i>重启</button>
+				</div>
+				<div class="panel-body custom-scroll-hidden">
+					<!-- 概览面板：海陆缆整体情况 -->
+					<div class="overview">
+						<div class="title sci-title">
+							<svg class="sci-icon" width="28" height="28" viewBox="0 0 28 28" style="margin-right:8px;">
+								<defs>
+									<radialGradient id="sciG" cx="50%" cy="50%" r="60%">
+										<stop offset="0%" stop-color="#48dbfb" />
+										<stop offset="100%" stop-color="#165DFF" />
+									</radialGradient>
+								</defs>
+								<circle cx="14" cy="14" r="12" fill="url(#sciG)" opacity="0.7" />
+								<circle cx="14" cy="14" r="7" fill="#fff" opacity="0.18" />
+							</svg>
+							<span class="sci-text">海陆缆整体情况</span>
+						</div>
+						<div class="metrics">
+							<div class="metric">
+								<div class="label">权益</div>
+								<div class="value">{{ formatG(overviewDisplayMetrics.equityTotal) }}</div>
+							</div>
+							<div class="metric">
+								<div class="label">点亮</div>
+								<div class="value">{{ formatG(overviewDisplayMetrics.lightUpBandwidthTotal) }}</div>
+							</div>
+							<div class="metric">
+								<div class="label">已用</div>
+								<div class="value">{{ formatG(overviewDisplayMetrics.usingBandwidthTotal) }}</div>
+							</div>
+							<div class="metric">
+								<div class="label">海陆缆总长</div>
+								<div class="value">{{ formatKm(overviewDisplayMetrics.lengthTotal) }}</div>
+							</div>
+							<div class="metric">
+								<div class="label">利用率</div>
+								<div class="value">{{ formatPercent(overviewDisplayMetrics.utilizationRateTotal) }}</div>
+							</div>
+							<div class="metric">
+								<div class="label">业务总数</div>
+								<div class="value">{{ formatInt(overviewDisplayMetrics.businessesTotal) }}</div>
+							</div>
+						</div>
+						<div class="regions">
+							<label class="chip">
+								<input type="radio" name="overviewRegion" value="默认" v-model="overviewRegion"> 全部
+							</label>
+							<label class="chip" v-for="r in ['美国','欧洲','亚太','澳洲','其他']" :key="r">
+								<input type="radio" name="overviewRegion" :value="r" v-model="overviewRegion"> {{ r }}
+							</label>
+						</div>
+					</div>
+					<div class="controls">
+						<div class="block">
+							<div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+								<h3>筛选
+									<label class="inline-btn"
+										style="margin-left:10px; display:inline-flex; align-items:center; gap:6px;">
+										<input type="checkbox" v-model="showCables" @change="updateChart"> 海缆
+									</label>
+									<label class="inline-btn"
+										style="margin-left:6px; display:inline-flex; align-items:center; gap:6px;">
+										<input type="checkbox" v-model="showLandings" @change="updateChart"> 登陆站
+									</label>
+								</h3>
+								<div style="display:flex; gap:6px;">
+									<button class="inline-btn" @click.stop="selectAllOwnerships">权益全选</button>
+									<button class="inline-btn" @click.stop="selectAllTypes">类型全选</button>
+								</div>
+							</div>
+							<div class="filters" style="margin-top:6px;">
+								<label class="ownership-self">
+									<input type="checkbox" value="自建" v-model="selectedOwnerships"> 自建
+									<span class="only-btn" @click.stop.prevent="selectOnlyOwnership('自建')">只选</span>
+								</label>
+								<label class="ownership-co">
+									<input type="checkbox" value="合建" v-model="selectedOwnerships"> 合建
+									<span class="only-btn" @click.stop.prevent="selectOnlyOwnership('合建')">只选</span>
+								</label>
+								<label class="ownership-rent">
+									<input type="checkbox" value="租用" v-model="selectedOwnerships"> 租用
+									<span class="only-btn" @click.stop.prevent="selectOnlyOwnership('租用')">只选</span>
+								</label>
+								<label class="ownership-none">
+									<input type="checkbox" value="非权益" v-model="selectedOwnerships"> 非权益
+									<span class="only-btn" @click.stop.prevent="selectOnlyOwnership('非权益')">只选</span>
+								</label>
+
+								<label><input type="checkbox" value="跨太平洋" v-model="selectedTypes"> 跨太平洋 <span
+										class="only-btn" @click.stop.prevent="selectOnlyType('跨太平洋')">只选</span></label>
+								<label><input type="checkbox" value="亚欧互联" v-model="selectedTypes"> 亚欧互联 <span
+										class="only-btn" @click.stop.prevent="selectOnlyType('亚欧互联')">只选</span></label>
+								<label><input type="checkbox" value="区域互联" v-model="selectedTypes"> 区域互联 <span
+										class="only-btn" @click.stop.prevent="selectOnlyType('区域互联')">只选</span></label>
+								<label><input type="checkbox" value="其他" v-model="selectedTypes"> 其他 <span
+										class="only-btn" @click.stop.prevent="selectOnlyType('其他')">只选</span></label>
+							</div>
+							<div class="filters range" style="margin-top:8px;">
+								<label>洲别
+									<select v-model="scopeContinent">
+										<option value="all">全部</option>
+										<option value="APAC">亚太</option>
+										<option value="EMEA">欧洲中东非</option>
+										<option value="AMER">美洲</option>
+									</select>
+								</label>
+								<label>距离
+									<select v-model="scopeDistance">
+										<option value="all">不限</option>
+										<option value=">5000">大于 5000km</option>
+										<option value="<5000">小于 5000km</option>
+									</select>
+								</label>
+							</div>
+						</div>
+					</div>
+					<div class="title stats-title"><span class="accent"></span>海缆整体情况</div>
+					<div class="console-stats">
+						<div class="stat stat-hero">
+							<div class="stat-row">
+								<div class="stat-left">
+									<div class="stat-head">
+										<span class="stat-chip pulse">实时</span>
+										<span class="stat-title">全网海缆</span>
+									</div>
+									<div class="stat-subline">运行中 {{ stats.okCount }} ｜ 故障 <span class="stat-fault">{{ faultCount }}</span></div>
+								</div>
+								<div class="stat-right">
+									<div class="stat-number">{{ stats.totalCables }}</div>
+								</div>
+							</div>
+						</div>
+						<div class="stat">
+							<div class="stat-row">
+								<div class="stat-left">
+									<div class="stat-head">
+										<span class="stat-chip">覆盖</span>
+										<span class="stat-title">登陆站</span>
+									</div>
+									<div class="stat-subline">权益 {{ stats.ownedLandings }}</div>
+								</div>
+								<div class="stat-right">
+									<div class="stat-number">{{ stats.totalLandings }}</div>
+								</div>
+							</div>
+						</div>
+						<div class="stat">
+							<div class="stat-row">
+								<div class="stat-left">
+									<div class="stat-head">
+										<span class="stat-chip ghost">资产</span>
+										<span class="stat-title">权益海缆</span>
+									</div>
+									<div class="stat-grid">
+										<span>自建 {{ stats.selfCables }}</span>
+										<span>合建 {{ stats.coCables }}</span>
+										<span>租用 {{ stats.rentCables }}</span>
+									</div>
+								</div>
+								<div class="stat-right">
+									<div class="stat-number">{{ stats.ownedCables }}</div>
+								</div>
+							</div>
+						</div>
+						<div class="stat">
+							<div class="stat-row">
+								<div class="stat-left">
+									<div class="stat-head">
+										<span class="stat-chip ghost">节点</span>
+										<span class="stat-title">权益登陆站</span>
+									</div>
+									<div class="stat-subline muted">包含自建 / 合建 / 租用</div>
+								</div>
+								<div class="stat-right">
+									<div class="stat-number">{{ stats.ownedLandings }}</div>
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<!-- 全局 Tooltip 容器（紧凑/大屏通用） -->
+							<div v-if="faultTooltip.show" ref="faultTooltip" class="tooltip-box fault-tooltip"
+				:style="{ left: faultTooltip.left + 'px', top: faultTooltip.top + 'px' }">
+				<div class="title">
+					<span class="pill" :style="typeThemeStyle('cable')">故障</span>
+					<span>{{ faultTitle(faultTooltip.fault) }}</span>
+				</div>
+				<div class="fault-tooltip-body">
+					<div class="fault-loc-list">
+						<template v-if="faultTooltipCables(faultTooltip.fault).length">
+							<div class="loc-card" v-for="(loc, idx) in faultTooltipCables(faultTooltip.fault)" :key="idx">
+								<div class="loc-head">
+									<span class="pill danger-pill">故障定位 {{ idx + 1 }}</span>
+									<span class="loc-name">{{ safeVal(loc.cable) }}</span>
+								</div>
+								<div class="loc-meta">
+									<span class="chip">登陆站：{{ loc.landing || '未填站点' }}</span>
+									<span class="chip">距离：{{ loc.distance || '--' }} km</span>
+								</div>
+							</div>
+						</template>
+						<div v-else class="empty">暂未故障定点</div>
+					</div>
+					<div class="fault-info-list">
+						<div class="row"><div class="key">工单号</div><div class="val">{{ safeVal(faultTooltip.fault?.workOrder) }}</div></div>
+						<div class="row"><div class="key">开始时间</div><div class="val">{{ safeVal(faultTooltip.fault?.start) }}</div></div>
+						<div class="row"><div class="key">结束时间</div><div class="val">{{ safeVal(faultTooltip.fault?.end) }}</div></div>
+						<div class="row"><div class="key">故障原因</div><div class="val">{{ safeVal(faultTooltip.fault?.cause) }}</div></div>
+						<div class="row"><div class="key">处理进展</div><div class="val">{{ safeVal(faultTooltip.fault?.progress) }}</div></div>
+						<div class="row"><div class="key">业务影响</div><div class="val">{{ safeVal(faultTooltip.fault?.impact) }}</div></div>
+						<div class="row"><div class="key">备注</div><div class="val">{{ safeVal(faultTooltip.fault?.remark) }}</div></div>
+						<div class="row"><div class="key">是否重大</div><div class="val">{{ safeVal(faultTooltip.fault?.isMajor) }}</div></div>
+					</div>
+				</div>
+			</div>
+
+					<div v-if="landingTooltip.show" ref="landingTooltip" class="tooltip-box"
+				:style="[{ left: landingTooltip.left + 'px', top: landingTooltip.top + 'px' }, tooltipThemeStyle('landing', landingTooltip.lp)]">
+				<div class="title">
+					<span class="pill" :style="pillThemeStyle('landing', landingTooltip.lp)">登陆站</span>
+					<span>{{ normalizeText(landingTooltip.lp?.name || '登陆站') }}</span>
+					<span class="pill" v-if="landingTooltip.lp?.country || landingTooltip.detail?.country">{{
+						translateCountryToZh(normalizeText(landingTooltip.lp?.country || landingTooltip.detail?.country)) }}</span>
+				</div>
+				<div class="row"><div class="key">经纬度</div><div class="val"><span v-if="landingTooltip.lp?.coords && landingTooltip.lp.coords.length >= 2">Lon {{ Number(landingTooltip.lp.coords[0]).toFixed(2) }}, Lat {{ Number(landingTooltip.lp.coords[1]).toFixed(2) }}</span><span v-else>-</span></div></div>
+				<div class="row"><div class="key">局向</div><div class="val">{{ displayDirection(landingTooltip.lp?.direction || landingTooltip.detail?.direction) }}</div></div>
+				<div class="row"><div class="key">洲别</div><div class="val">{{ displayContinents(landingTooltip.lp?.continent || landingTooltip.detail?.continent || landingTooltip.lp?.continentMacro || landingTooltip.detail?.continentMacro) || displayMacroRegion(landingTooltip.lp?.continent || landingTooltip.detail?.continent || landingTooltip.lp?.continentMacro || landingTooltip.detail?.continentMacro) || '-' }}</div></div>
+				<div class="row"><div class="key">关联海缆</div><div class="val"><strong>{{ landingTooltip.detail?.cables?.length || 0 }}</strong> 条</div></div>
+				<div class="tooltip-list" v-if="tooltipLandingCables.length">
+					<label class="chip" v-for="(cb, idx) in tooltipLandingCables" :key="cb.id || idx" @click.stop>
+						<input type="checkbox" v-model="landingTooltip.selectedCableIds" :value="cb.id || cb.name" style="margin-right:6px;">
+						<span class="name" @click.stop="focusCableByRef(cb)">{{ cb.name }}</span>
+						<span class="meta">{{ cb.rfs_year || '-' }}<span class="planned" v-if="cb.is_planned" style="margin-left:6px;">规划中</span></span>
+					</label>
+				</div>
+			</div>
+
+					<div v-if="cableTooltip.show" ref="cableTooltip" class="tooltip-box"
+				:style="[{ left: cableTooltip.left + 'px', top: cableTooltip.top + 'px' }, tooltipThemeStyle('cable', cableTooltip.line)]">
+				<div class="title">
+					<span class="pill" :style="typeThemeStyle('cable')">海缆</span>
+					<span>{{ cableTooltip.line?.name || '海缆' }}</span>
+					<span class="pill" :class="cableTooltip.line?.ownershipClass" v-if="cableTooltip.line?.ownership">{{ cableTooltip.line?.ownership }}</span>
+				</div>
+				<div class="row"><div class="key">长度</div><div class="val">{{ cableTooltip.detail?.length || '-' }}</div></div>
+				<div class="row"><div class="key">直线距离</div><div class="val">{{ cableTooltip.line?.km || 0 }} km</div></div>
+				<div class="row"><div class="key">商用年</div><div class="val">{{ cableTooltip.detail?.rfs_year || '-' }}</div></div>
+				<div class="row"><div class="key">局向</div><div class="val">{{ displayDirection(cableTooltip.line?.direction || cableTooltip.detail?.direction) }}</div></div>
+				<div class="row"><div class="key">洲别</div><div class="val">{{ displayContinents(cableTooltip.line?.continents || cableTooltip.detail?.continents || cableTooltip.line?.continent || cableTooltip.detail?.continent) || displayMacroRegion(cableTooltip.line?.continent || cableTooltip.detail?.continent) || '-' }}</div></div>
+				<div class="row"><div class="key">登陆点</div><div class="val"><strong>{{ landingCount(cableTooltip.detail || cableDetail.detail) }}</strong> 个</div></div>
+			</div>
+
+			<!-- 中：世界地图 -->
+			<section class="panel center" :class="{ fullscreen: isMapFullscreen }">
+				<div class="panel-body">
+					<!-- 标题图片叠层（不阻挡交互） -->
+					<div class="map-title-overlay" aria-hidden="true">
+						<img :src="currentTitleBgUrl" alt="title banner" loading="lazy" />
+						<div class="title-text">全球海缆运行状态总览</div>
+					</div>
+					<!-- 地图工具：收拢为 Speed Dial -->
+					<div class="map-actions dial" :class="{ open: mapDialOpen }">
+						<div class="dial-main">
+							<button class="fab primary" @click="toggleGlobe" :disabled="modeSwitching">
+								<i class="el-icon-map-location"></i>
+								<span>{{ isGlobe ? '平面' : '3D' }}</span>
+							</button>
+							<button class="fab ghost" :disabled="modeSwitching" @click="toggleFullscreen">
+								<i class="el-icon-full-screen"></i>
+								<span>{{ isMapFullscreen ? '退出' : '全屏' }}</span>
+							</button>
+							<button v-if="focusMode !== 'none'" class="fab ghost" :disabled="modeSwitching" @click="clearFocus">
+								<i class="el-icon-close"></i>
+								<span>退出聚焦</span>
+							</button>
+							<button class="fab toggle" @click="toggleMapDial" :aria-pressed="mapDialOpen">
+								<i :class="mapDialOpen ? 'el-icon-close' : 'el-icon-menu'" ></i>
+								<span>工具</span>
+							</button>
+						</div>
+						<div class="dial-panel" v-show="mapDialOpen">
+							<div class="dial-section">
+								<div class="dial-section-title">模式 / 布局</div>
+								<div class="dial-grid">
+									<button class="btn hero" :class="{ 'is-loading': modeSwitching }" :disabled="modeSwitching" @click="toggleCompactMode" title="双布局切换：紧凑模式提升信息密度与操作效率，默认首次加载。"><i class="el-icon-monitor" style="margin-right:4px;"></i>{{ isCompactMode ? '大屏模式' : '紧凑模式' }}
+										<el-tooltip effect="dark" placement="top" content="紧凑模式：提升信息密度与操作效率，适配小屏；大屏模式：更适合展示。">
+											<i class="el-icon-info" aria-hidden="true" style="margin-left:6px;"></i>
+										</el-tooltip>
+									</button>
+									<button class="btn ghost" :disabled="modeSwitching" @click="resetLayout"><i class="el-icon-refresh" style="margin-right:4px;"></i>重置布局</button>
+									<button class="btn ghost" :disabled="modeSwitching" @click="resetView"><i class="el-icon-refresh-left" style="margin-right:4px;"></i>复位视角</button>
+									<button class="btn ghost" :disabled="modeSwitching" @click="restartApp"><i class="el-icon-switch-button" style="margin-right:4px;"></i>重启</button>
+									<button class="btn hero" :disabled="modeSwitching" @click="openAgent" title="Agent 入口"><i class="el-icon-chat-line-round" style="margin-right:4px;"></i>Agent（敬请期待）</button>
+								</div>
+							</div>
+							<div class="dial-section">
+								<div class="dial-section-title">实况 / 展示</div>
+								<div class="dial-grid live-grid">
+									<button
+										class="btn live"
+										:class="{ 'is-loading': liveScenarioRunning && liveScenarioMode === 'pc', active: liveScenarioMode === 'pc' }"
+										:disabled="modeSwitching || (liveScenarioRunning && liveScenarioMode !== 'pc')"
+										@click="liveScenarioMode === 'pc' ? stopPcLiveMode() : startPcLiveMode()">
+										<i :class="liveScenarioMode === 'pc' ? 'el-icon-switch-button' : 'el-icon-s-promotion'" style="margin-right:4px;"></i>
+										{{ liveScenarioMode === 'pc' ? '停止 PC 实况模式' : '开启 PC 实况模式' }}
+									</button>
+									<button
+										class="btn live"
+										:class="{ 'is-loading': liveScenarioRunning && liveScenarioMode === 'big-screen', active: liveScenarioMode === 'big-screen' }"
+										:disabled="modeSwitching || (liveScenarioRunning && liveScenarioMode !== 'big-screen')"
+										@click="liveScenarioMode === 'big-screen' ? stopBigScreenLiveMode() : startBigScreenLiveMode()">
+										<i :class="liveScenarioMode === 'big-screen' ? 'el-icon-switch-button' : 'el-icon-monitor'" style="margin-right:4px;"></i>
+										{{ liveScenarioMode === 'big-screen' ? '停止大屏实况模式' : '开启大屏实况模式' }}
+									</button>
+									<button class="btn ghost" :disabled="modeSwitching" @click="toggleShowLandingLabels()"><i class="el-icon-view" style="margin-right:4px;"></i>{{ showLandingLabels ? '隐藏登陆站名' : '显示登陆站名' }}</button>
+									<button v-if="focusTargetCoord" class="btn ghost" :disabled="modeSwitching" @click="centerFocus"><i class="el-icon-location-outline" style="margin-right:4px;"></i>居中焦点</button>
+									<button v-if="isGlobe" class="btn ghost" :disabled="modeSwitching" @click="toggleAutoRotate"><i class="el-icon-refresh" style="margin-right:4px;"></i>{{ autoRotate ? '停止自转' : '开启自转' }}（{{ autoRotateSpeed.toFixed(1) }}×）</button>
+									<label v-if="isGlobe && autoRotate" class="btn ghost auto-rotate-speed">
+										<span>自转速度</span>
+										<input type="range" min="0.2" max="20" step="0.1" v-model.number="autoRotateSpeed" @input="onAutoRotateSpeedChange">
+										<span style="text-align:right;">{{ autoRotateSpeed.toFixed(1) }}×</span>
+									</label>
+									<button class="btn ghost" :disabled="modeSwitching" @click="toggleLegend"><i class="el-icon-collection" style="margin-right:4px;"></i>{{ legendVisible ? '隐藏图例' : '显示图例' }}</button>
+								</div>
+							</div>
+							<div class="dial-section">
+								<div class="dial-section-title"><i class="el-icon-brush" aria-hidden="true" style="margin-right:6px;"></i>{{ isGlobe ? '3D / 样式' : '2D / 样式' }}</div>
+								<div class="dial-grid">
+									<label class="btn ghost" style="display:inline-flex; align-items:center; gap:8px;">
+										<span>缩放</span>
+										<input type="range" min="0" max="100" v-model.number="zoomSlider" @input="onZoomSlider" style="width:170px;">
+										<button class="btn ghost" style="margin-left:4px; padding:2px 6px; width: auto;" @click.stop="resetZoomSlider" :disabled="modeSwitching">重置</button>
+									</label>
+									<label v-if="isGlobe" class="btn ghost" style="display:inline-flex; align-items:center; gap:8px; min-width: 220px;" title="选择 3D 地形纹理（带标签）">
+										<span>3D 地形</span>
+										<select v-model="currentGlobeTextureKey" @change="applyGlobeTexture(currentGlobeTextureKey)" style="min-width: 150px;">
+											<option v-for="tex in globeTextureOptions" :key="tex.key" :value="tex.key">{{ tex.name }}</option>
+										</select>
+									</label>
+									<!-- 移除 2D 背景纹理下拉（与底色风格重复），保留统一的底色风格下拉 -->
+									<label v-if="!isGlobe" class="btn ghost" style="display:inline-flex; align-items:center; gap:8px; min-width: 220px;" title="选择 2D 地图底色风格，兼顾紧凑/大屏与聚焦/打点/实况模式。">
+										<span>2D 底色</span>
+										<select v-model="mapTextureStyle" @change="onMapTextureStyleChange(mapTextureStyle)" style="min-width: 150px;">
+											<option v-for="opt in mapTextureStyleOptions" :key="opt.key" :value="opt.key">{{ opt.name }}</option>
+										</select>
+									</label>
+									<label v-if="isGlobe" class="btn ghost" style="display:inline-flex; align-items:center; gap:8px; min-width: 220px;" title="选择 3D 光效风格（光照/泛光/大气），并可一键关闭光效，谨慎以避免跷跷板。">
+										<span>3D 光效</span>
+										<select v-model="globeGlowStyle" @change="onGlobeGlowStyleChange(globeGlowStyle)" style="min-width: 150px;">
+											<option v-for="opt in globeGlowStyleOptions" :key="opt.key" :value="opt.key">{{ opt.name }}</option>
+										</select>
+									</label>
+									<label v-if="isGlobe" class="btn ghost" style="display:inline-flex; align-items:center; gap:8px; min-width: 240px;" title="拖动调整光效亮度，范围 0.2-2.5（默认 1.0），实时作用于光照与泛光。">
+										<span>光效亮度</span>
+										<input type="range" min="0.2" max="2.5" step="0.05" v-model.number="globeGlowBrightness" @input="onGlobeGlowBrightnessChange(globeGlowBrightness)" style="width:160px;">
+										<span style="min-width:42px; text-align:right;">{{ globeGlowBrightness.toFixed(2) }}</span>
+										<button class="btn ghost" style="margin-left:4px; padding:2px 6px; width: auto;" @click.stop="resetGlobeGlowBrightness" :disabled="modeSwitching">重置</button>
+									</label>
+									<button v-if="isGlobe" class="btn ghost" :disabled="modeSwitching" @click="toggleGlobeGlow" title="开关 3D 光效（bloom/大气辉光）">
+										<i class="el-icon-lightning" style="margin-right:4px;"></i>{{ globeGlowEnabled ? '关闭光效' : '开启光效' }}
+									</button>
+								</div>
+							</div>
+							<div class="dial-section">
+								<div class="dial-section-title"><i class="el-icon-magic-stick" aria-hidden="true" style="margin-right:6px;"></i>动画 / 特效</div>
+								<div class="dial-grid">
+									<button class="btn ghost" :disabled="modeSwitching" @click="toggleLineEffect">
+										<i class="el-icon-guide" style="margin-right:4px;"></i>{{ lineEffectEnabled ? '关闭走线效果' : '开启走线效果' }}
+									</button>
+									<button class="btn ghost" :disabled="modeSwitching" @click="toggleDemoFaults" title="所有接口不可用时会自动切换到演示数据，可手动开启/关闭">
+										<i :class="useDemoFaults ? 'el-icon-data-line' : 'el-icon-data-analysis'" style="margin-right:4px;"></i>{{ useDemoFaults ? '关闭演示故障' : '开启演示故障' }}
+									</button>
+								</div>
+							</div>
+							<div class="dial-section">
+								<div class="dial-section-title"><i class="el-icon-collection-tag" aria-hidden="true" style="margin-right:6px;"></i>数据 / 后台</div>
+								<div class="dial-grid">
+									<label class="btn ghost" style="display:inline-flex; align-items:center; gap:8px; min-width: 180px;">
+										<span>标题背景</span>
+										<select v-model="currentTitleBgKey" @change="applyTitleBg(currentTitleBgKey)" style="min-width: 140px;">
+											<option v-for="opt in titleBgOptions" :key="opt.key" :value="opt.key">{{ opt.name }}</option>
+										</select>
+									</label>
+									<label class="btn ghost" style="display:inline-flex; align-items:center; gap:8px; min-width: 200px;" title="切换故障数据源（OA/生产网/本地），自动探测可用性，支持打点测距与聚焦联动。">
+										<span>故障接口</span>
+										<el-tooltip effect="dark" placement="top" content="按需切换 OA/生产网/本地接口；自动探测可用性，支持故障聚焦与打点测距联动。">
+											<i class="el-icon-info" aria-hidden="true"></i>
+										</el-tooltip>
+										<select v-model="faultApiMode" @change="onFaultApiModeChange" :disabled="modeSwitching" style="min-width: 140px;">
+											<option v-for="mode in faultApiModes" :key="mode.key" :value="mode.key" :disabled="isFaultModeDisabled(mode.key)">{{ faultApiModeLabel(mode) }}</option>
+										</select>
+									</label>
+									<label v-if="!isGlobe" class="btn ghost" style="display:inline-flex; align-items:center; gap:8px; min-width: 220px;" title="通过几何重构修复 2D 地图在日期变更线（±180°经线）上的拆段，让跨洋线路连续可测，减少误差。">
+										<span>2D 海缆重算</span>
+										<el-tooltip effect="dark" placement="top" content="修复 2D 日期变更线拆段：跨洋线路连续可测，减少距离误差；默认加载已保存结果。">
+											<i class="el-icon-info" aria-hidden="true"></i>
+										</el-tooltip>
+										<select v-model="twoDRebuildMode" @change="onTwoDRebuildModeChange" :disabled="modeSwitching" style="min-width: 150px;">
+											<option v-for="opt in twoDRebuildOptions" :key="opt.key" :value="opt.key">{{ opt.name }}</option>
+										</select>
+									</label>
+									<label v-if="isGlobe" class="btn ghost" style="display:inline-flex; align-items:center; gap:8px; min-width: 220px;" title="仅对跨太平洋线路执行球面插值（slerp）重算，自动跨越日期变更线连接，避免 3D 视图断线。">
+										<span>3D 海缆重算</span>
+										<el-tooltip effect="dark" placement="top" content="仅跨太平洋线路：球面插值（slerp）跨越日期变更线自动连通；默认加载已保存 3D 重算数据。">
+											<i class="el-icon-info" aria-hidden="true"></i>
+										</el-tooltip>
+										<select v-model="threeDRebuildMode" @change="onThreeDRebuildModeChange" :disabled="modeSwitching" style="min-width: 150px;">
+											<option v-for="opt in threeDRebuildOptions" :key="opt.key" :value="opt.key">{{ opt.name }}</option>
+										</select>
+									</label>
+									<label v-if="isGlobe" class="btn ghost" style="display:inline-flex; align-items:center; gap:8px; min-width: 220px;" title="控制 3D 球面插值的采样间隔（km），步距越小越平滑、点数越多；步距越大越省资源。">
+										<span>弧段步距</span>
+										<el-tooltip effect="dark" placement="top" content="3D 球面插值的采样间隔（km）：越小越平滑、点数越多；越大越省性能。默认 150 km。">
+											<i class="el-icon-info" aria-hidden="true"></i>
+										</el-tooltip>
+										<select v-model.number="threeDArcStepKm" @change="onThreeDArcStepChange" :disabled="modeSwitching" style="min-width: 150px;">
+											<option v-for="opt in threeDArcStepOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+										</select>
+									</label>
+									<label v-if="!isGlobe" class="btn ghost" style="display:inline-flex; align-items:center; gap:8px; min-width: 220px;">
+										<span>2D 地图版本</span>
+										<select v-model="mapVersion" @change="onMapVersionChange" :disabled="modeSwitching" style="min-width: 150px;">
+											<option v-for="opt in mapVersionOptions" :key="opt.key" :value="opt.key">{{ opt.name }}</option>
+										</select>
+									</label>
+									<button class="btn ghost" :disabled="modeSwitching" @click="openHelp"><i class="el-icon-question" style="margin-right:4px;"></i>帮助</button>
+								</div>
+							</div>
+						</div>
+					</div>
+					<!-- 打点提示条：进入打点时的悬浮提示 -->
+					<div v-if="faultEditState.picking" class="fault-pick-toast">打点模式：请在故障涉及海缆走线上单击故障点，自动写入经纬度和距离</div>
+					<!-- 打点确认条：写入后显示距离/坐标并给出操作按钮 -->
+					<div v-if="faultPickConfirmVisible" class="fault-pick-confirm">
+						<div>已写入：{{ faultEditState.pointCoord || '--' }} ｜ {{ faultEditState.distance || '--' }} km</div>
+						<div class="actions">
+							<button class="inline-btn" :disabled="faultEditState.saving" @click.stop="confirmFaultPickSave()">保存并退出打点</button>
+							<button class="inline-btn" @click.stop="continueFaultPick()">继续打点</button>
+							<button class="inline-btn" @click.stop="exitFaultPointPick()">退出打点</button>
+						</div>
+					</div>
+					<!-- 打点浮窗：右下实时展示当前编辑组的最新写入信息 -->
+					<div v-if="faultEditState.active && faultEditState.picking" class="fault-pick-floating">
+						<div class="title">编辑第 {{ faultEditState.index }} 组</div>
+						<div class="line">海缆：{{ faultEditState.cable || '未选择' }}</div>
+						<div class="line">登陆站：{{ faultEditState.landing || '未选择' }}</div>
+						<div class="line">距离：{{ faultEditState.distance || '--' }} km</div>
+						<div class="line">经纬度：{{ faultEditState.pointCoord || '--' }}</div>
+						<div class="actions">
+							<button class="inline-btn" @click.stop="startFaultPointPick()">重新打点</button>
+							<button class="inline-btn" :class="{ 'is-loading': faultEditState.saving }" :disabled="faultEditState.saving" @click.stop="confirmFaultPickSave()">保存</button>
+							<button class="inline-btn" @click.stop="continueFaultPick()">继续打点</button>
+							<button class="inline-btn" @click.stop="exitFaultPointPick()">退出打点</button>
+						</div>
+					</div>
+					<div id="worldCableMap" ref="map"></div>
+					<div v-if="mapLoading" class="panel-loading">
+						<span class="spinner" aria-hidden="true"></span>
+						<span class="text">{{ mapLoadingText || '地图加载中…' }}</span>
+					</div>
+					<!-- 使用说明弹层 -->
+					<div v-if="helpVisible" class="help-modal-overlay" @click.self="closeHelp">
+						<div class="help-modal">
+							<div class="help-header">
+								<h3>使用说明与提示</h3>
+								<button class="close-btn" @click="closeHelp" aria-label="关闭">×</button>
+							</div>
+							<div class="help-content">
+								<h4>Speed Dial 控制台</h4>
+								<ul>
+									<li>主按钮：2D/3D 切换、全屏、工具开关。</li>
+									<li>折叠面板：复位视角、显示站名、缩放滑条、标题背景、2D 底图/3D 纹理、故障叠加层、2D 重算、地图版本。</li>
+								</ul>
+								<h4>地图版本与坐标</h4>
+								<ul>
+									<li>支持 ap-zh（亚太中心）、std-zh/std-en（标准版）。</li>
+									<li>版本切换时，故障定位点与标记自动转换；更新后自动居中焦点。</li>
+									<li>列表与 Tooltip 的坐标随当前版本映射。</li>
+								</ul>
+								<h4>模式切换与稳定性</h4>
+								<ul>
+									<li>全屏切换采用“退出聚焦→切换→恢复聚焦”，避免地图空白。</li>
+									<li>紧凑→大屏沿用同策略，拖拽/切换后执行分时多次重绘。</li>
+									<li>打点模式下退出全屏等同退出打点。</li>
+								</ul>
+								<h4>默认与适配</h4>
+								<ul>
+									<li>首次加载默认紧凑模式（除非屏幕宽度 > 3000px）。</li>
+									<li>Speed Dial 面板设定最大高度并支持滚动，适配小屏。</li>
+									<li>紧凑模式标题与搜索框高度下调以避免遮挡。</li>
+								</ul>
+								<h4>版本里程碑（摘自 README）</h4>
+								<div class="help-version-grid">
+									<div class="version-card">
+										<div class="version-badge">v1.0</div>
+										<div class="version-meta">2025-12-01 · 响应式布局上线</div>
+										<p>实现大屏 / 紧凑的响应式布局切换，支持多分辨率适配与布局持久化。</p>
+									</div>
+									<div class="version-card">
+										<div class="version-badge">v1.5</div>
+										<div class="version-meta">2025-12-15 · 2D 模式完成</div>
+										<p>完善 2D 地图渲染，支持海缆 / 登陆站基础展示与筛选、聚焦联动。</p>
+									</div>
+									<div class="version-card">
+										<div class="version-badge">v2.0</div>
+										<div class="version-meta">2025-12-27 · 打点算法上线</div>
+										<p>上线故障打点与沿线测距，提供高精度故障定位与态势联动。</p>
+									</div>
+									<div class="version-card">
+										<div class="version-badge">v2.5</div>
+										<div class="version-meta">2026-01-05 · 3D 模式完成</div>
+										<p>完成 3D 地球模式，支持纹理切换、故障叠加与粒子尾迹效果。</p>
+									</div>
+									<div class="version-card">
+										<div class="version-badge">v3.0</div>
+										<div class="version-meta">2026-01-12 · 后台布局优化</div>
+										<p>支持海缆数据重算与保存，后台布局优化以换取稳定性能。</p>
+									</div>
+									<div class="version-card">
+										<div class="version-badge">v3.5</div>
+										<div class="version-meta">2026-01-15 · 接入生产信息系统</div>
+										<p>引入登录验证并与生产信息系统生态融合，同时保留重算与后台稳定性优化。</p>
+									</div>
+								</div>
+								<h4>未来规划（摘要）</h4>
+								<ul class="roadmap-list">
+									<li><span class="roadmap-pill">v4.0 · 2026-Q2</span> 权限管理：角色/日志分级控制，支持多人协作。</li>
+									<li><span class="roadmap-pill">v5.0 · 2026-Q3</span> 详细版世界地图：更高分辨率底图与瓦片，精细交互。</li>
+									<li><span class="roadmap-pill">v6.0 · 2026-Q4</span> 海陆缆系统：融合站点/海缆全量数据。</li>
+									<li><span class="roadmap-pill">v7.0 · 2026-Q4</span> 海缆系统智能体：邮件/自然语言自动生成故障输入与修复计划。</li>
+								</ul>
+							</div>
+						</div>
+					</div>
+				</div>
+			</section>
+			<!-- 外侧左右分隔条（仅大屏模式） -->
+			<div v-if="!isCompactMode" class="splitter-v" :style="{ left: 'calc(' + leftColPct + '% + 9px)', top: '10px', height: 'calc(100% - 20px)', zIndex: 50 }" @mousedown="startDragScreenLeft"></div>
+			<div v-if="!isCompactMode" class="splitter-v" :style="{ left: 'calc(' + (leftColPct + centerColPct) + '% + 9px)', top: '10px', height: 'calc(100% - 20px)', zIndex: 50 }" @mousedown="startDragScreenRight"></div>
+
+			<!-- 右：海缆状态控制台 -->
+			<section class="panel right" v-if="!isCompactMode">
+				<div class="panel-header"><span class="accent"></span>海缆状态控制台</div>
+				<div class="panel-body">
+					<div class="lists" ref="listsGrid" :style="{ position: 'relative', display: 'grid', gridTemplateColumns: leftPanePct + '%' + ' ' + (100-leftPanePct) + '%', gridTemplateRows: topHeightPct + '%' + ' ' + (100-topHeightPct) + '%', gap: '10px', height: '100%' }">
+						<!-- 垂直分隔条（左右） -->
+						<div class="splitter-v" :style="{ left: 'calc(' + leftPanePct + '% + 1px)', top: '0', height: 'calc(' + topHeightPct + '%)' }" @mousedown="startDragV"></div>
+						<!-- 水平分隔条（上下） -->
+						<div class="splitter-h" :style="{ top: 'calc(' + topHeightPct + '% )', left: '0', width: '100%' }" @mousedown="startDragH"></div>
+						<div class="list-row" style="grid-row:1; grid-column:1; min-width: 280px; min-height: 200px; overflow: hidden;">
+							<div class="list-block" v-show="!(floatingPanel.active && floatingPanel.type==='cable')" style="grid-row:1; grid-column:1;">
+								<div class="title-row with-search">
+									<h3 style="margin: 0;">海缆列表</h3>
+									<div class="searchbar">
+										<input type="text" v-model="searchCable" placeholder="搜索海缆名称" />
+										<button v-if="searchCable" class="clear-btn" @click="searchCable=''">×</button>
+									</div>
+									<button class="inline-btn drag-btn" title="点击拖动" @click="openFloating('cable')" style="margin-left:8px;">点击拖动</button>
+								</div>
+								<div class="list">
+									<div v-if="cablePageItems.length === 0" class="empty">暂无数据</div>
+									<div v-else>
+										<div v-for="(line, i) in cablePageItems"
+											:key="(line.feature_id || line.id || line.name) + '-' + i">
+											<div class="item"
+												:class="{ expanded: cableDetail.id === line.id, active: (focusMode==='cable' && focusedCableId===line.id) }"
+												@click="onCableItemClick(line)"
+												@mouseenter="showCableTooltip(line, $event)"
+												@mousemove="moveCableTooltip($event)" @mouseleave="hideCableTooltip">
+												<div class="primary" style="gap:10px;">
+													<span>{{ line.name }}</span>
+													<span class="ownership-tag" :class="line.ownershipClass">{{
+														line.ownership || '非权益' }}</span>
+													<button class="inline-btn"
+														@click.stop="toggleCableDetail(line)">{{ cableDetail.id === line.id ? '收起详情' : '详情' }}</button>
+												</div>
+												<div class="badge" :class="{ ok: !isCableFaulted(line), err: isCableFaulted(line) }">{{ isCableFaulted(line) ? '中断' : '运行中' }}</div>
+											</div>
+											<div v-if="cableDetail.id === line.id" class="cable-detail">
+												<div class="title">{{ line.name || '海缆' }}
+													<div>
+														<button class="inline-btn"
+															@click.stop="toggleItemLang('cable', line.id)">{{
+															getItemLang('cable', line.id) === 'zh' ? '中' : 'EN'
+															}}</button>
+														<button class="inline-btn"
+															@click.stop="copyText(line.name || '', '名称')">复制</button>
+														<button class="inline-btn"
+															@click.stop="toggleShowLandingLabels()"
+															style="display:none;">{{ showLandingLabels ? '隐藏登陆站名' :
+															'显示登陆站名' }}</button>
+														<button class="inline-btn expand"
+															@click.stop="openCableModal(line)">展开</button>
+													</div>
+												</div>
+												<div class="rows">
+													<div class="row">
+														<div class="key">{{ tLabel('branch','cable', line.id) }}
+														</div>
+														<div class="val">敬请期待</div>
+													</div>
+													<div class="row">
+														<div class="key">{{ tLabel('name','cable', line.id) }}</div>
+														<div class="val">{{ line.name }} <button class="inline-btn"
+																@click.stop="copyText(line.name || '', getItemLang('cable', line.id) === 'zh' ? '名称' : 'Name')">复制</button>
+														</div>
+													</div>
+													<div class="row">
+														<div class="key">{{ tLabel('id','cable', line.id) }}</div>
+														<div class="val">{{ line.id }} <button class="inline-btn"
+																@click.stop="copyText(line.id || '', getItemLang('cable', line.id) === 'zh' ? '编号' : 'ID')">复制</button>
+														</div>
+													</div>
+													<div class="row">
+														<div class="key">{{ tLabel('feature_id','cable', line.id) }}
+														</div>
+														<div class="val">{{ line.feature_id || '-' }} <button
+																class="inline-btn"
+																@click.stop="copyText(line.feature_id || '', 'feature_id')">复制</button>
+														</div>
+													</div>
+													<div class="row">
+														<div class="key">{{ tLabel('ownership','cable', line.id) }}
+														</div>
+														<div class="val">{{ line.ownership || '非权益' }}</div>
+													</div>
+													<div class="row">
+														<div class="key">局向</div>
+														<div class="val">{{ displayDirection(line.direction ||
+															cableDetail.detail?.direction) }}</div>
+													</div>
+													<div class="row">
+														<div class="key">洲别</div>
+														<div class="val">{{ displayContinents(line.continents ||
+															cableDetail.detail?.continents || line.continent ||
+															cableDetail.detail?.continent) ||
+															displayMacroRegion(line.continent ||
+															cableDetail.detail?.continent) || '-' }}</div>
+													</div>
+													<div class="row">
+														<div class="key">{{ tLabel('rfs_year','cable', line.id) }}
+														</div>
+														<div class="val">{{ cableDetail.detail?.rfs_year || '-' }}
+														</div>
+													</div>
+													<div class="row">
+														<div class="key">{{ tLabel('is_planned','cable', line.id) }}
+														</div>
+														<div class="val">{{ cableDetail.detail?.is_planned ?
+															(getItemLang('cable', line.id) === 'zh' ? '是' : 'Yes') :
+															(getItemLang('cable', line.id) === 'zh' ? '否' : 'No') }}
+														</div>
+													</div>
+													<div class="row" v-if="cableDetail.detail?.length">
+														<div class="key">{{ tLabel('length','cable', line.id) }}
+														</div>
+														<div class="val">{{ cableDetail.detail.length }}</div>
+													</div>
+													<div class="row" v-if="getCableUrl(line)">
+														<div class="key">{{ tLabel('website','cable', line.id) }}
+														</div>
+														<div class="val"><button class="link-btn"
+																@click.stop="openUrl(getCableUrl(line))">官网</button>
+														</div>
+													</div>
+													<div class="row"
+														v-if="cableDetail.detail?.owners || cableDetail.detail?.owner">
+														<div class="key">{{ tLabel('owners','cable', line.id) }}
+														</div>
+														<div class="val"><span class="owner-text"
+																:class="{ expanded: isExpanded(line.id, 'owners') }"
+																@click.stop="toggleExpand(line.id, 'owners')"><template
+																	v-if="isExpanded(line.id, 'owners')">{{
+																	displayOwnerText(line.id) }}</template><template
+																	v-else>{{ displayOwnerText(line.id) }}<span
+																		v-if="needsOwnerEllipsis(line.id)"
+																		class="owner-ell">…</span></template></span>
+														</div>
+													</div>
+													<div class="row" v-if="cableDetail.detail?.suppliers">
+														<div class="key">{{ tLabel('suppliers','cable', line.id) }}
+														</div>
+														<div class="val">{{
+															translateEntities(cableDetail.detail.suppliers,
+															getItemLang('cable', line.id)) }}</div>
+													</div>
+													<div class="row">
+														<div class="key">{{ tLabel('landings','cable', line.id) }}
+														</div>
+														<div class="val">
+															<div class="inline-flex">
+																<span class="meta-count">{{
+																	landingCount(cableDetail.detail) }} 个</span>
+																<select v-if="landingCount(cableDetail.detail) > 0"
+																	v-model="cableDetail.landingLimit" @click.stop
+																	class="mini-select">
+																	<option :value="8">前 8 条</option>
+																	<option :value="15">前 15 条</option>
+																	<option value="all">全部</option>
+																</select>
+															</div>
+															<div v-if="landingCount(cableDetail.detail) > 0"
+																class="lines indent-lines" style="margin-top:6px;">
+																<div class="line"
+																	v-for="(lp,i2) in cableLandingLimited()"
+																	:key="lp.id || i2"
+																	@click.stop="focusLandingByRef(lp)">
+																	<span class="name">{{ normalizeText(lp.name)
+																		}}</span>
+																	<span class="meta" v-if="lp.country">{{
+																		translateCountryToZh(normalizeText(lp.country))
+																		}}</span>
+																</div>
+																<div class="more"
+																	v-if="landingCount(cableDetail.detail) > cableLandingVisibleCount()">
+																	等 {{ landingCount(cableDetail.detail) -
+																	cableLandingVisibleCount() }} 条…</div>
+															</div>
+															<span v-else>暂无</span>
+														</div>
+													</div>
+												</div>
+
+												<div v-if="cableDetail.loading" style="color:#8aa4c4; margin-top:4px;">
+													详情加载中…</div>
+											</div>
+										</div>
+									</div>
+								</div>
+								<div class="list-footer">
+									<div class="page-size" v-if="cablePaginationAdvanced">
+										每页
+										<select v-model.number="cablePageSize">
+											<option :value="20">20</option>
+											<option :value="50">50</option>
+											<option :value="100">100</option>
+										</select>
+										条｜共 {{ cableTotal }} 条
+									</div>
+									<div class="actions">
+										<button @click="prevCablePage" :disabled="cablePage <= 1">上一页</button>
+										<button @click="nextCablePage"
+											:disabled="cablePage >= cableTotalPages">下一页</button>
+									</div>
+									<div class="page-jump" v-if="cablePaginationAdvanced">
+										跳转
+										<input type="number" v-model.number="cablePageInput" @keyup.enter="goCablePage"
+											min="1" :max="cableTotalPages" />
+										<button @click="goCablePage">Go</button>
+									</div>
+									<label class="quick-toggle">
+										<input type="checkbox" v-model="cablePaginationAdvanced" />
+										高级
+									</label>
+									<div class="page-info">第 {{ cablePage }} / {{ cableTotalPages }} 页</div>
+								</div>
+							</div>
+							<div class="list-block" v-show="!(floatingPanel.active && floatingPanel.type==='landing')" style="grid-row:1; grid-column:2; min-width: 280px; min-height: 200px; overflow: hidden;">
+								<div class="title-row with-search">
+									<h3 style="margin: 0;">登陆站列表</h3>
+									<div class="searchbar">
+										<input type="text" v-model="searchLanding" placeholder="搜索登陆站坐标或名称" />
+										<button v-if="searchLanding" class="clear-btn"
+											@click="searchLanding=''">×</button>
+									</div>
+									<button class="inline-btn drag-btn" title="点击拖动" @click="openFloating('landing')" style="margin-left:8px;">点击拖动</button>
+								</div>
+								<div class="list">
+									<div v-if="landingPageItems.length === 0" class="empty">暂无数据</div>
+									<div v-else>
+										<div v-for="(lp, i) in landingPageItems" :key="lp.coordStr + i">
+											<div class="item"
+												:class="{ expanded: landingDetail.id === lp.id, active: (focusMode==='landing' && focusedLanding && focusedLanding.id===lp.id) }"
+												@click="onLandingItemClick(lp)"
+												@mouseenter="showLandingTooltip(lp, $event)"
+												@mousemove="moveLandingTooltip($event)" @mouseleave="hideLandingTooltip"
+												:title="'点击聚焦'">
+												<div class="primary">
+													<!-- 去掉箭头icon -->
+													<span>{{ normalizeText(lp.name || ('登陆站 ' + (i+1))) }}</span>
+													<span class="ownership-tag" :class="lp.ownershipClass">{{ lp.ownership || '非权益' }}</span>
+													<span class="badge" :class="isLandingInvolved(lp) ? 'warn' : 'ok'" style="margin-left:6px;">{{ isLandingInvolved(lp) ? '涉及故障' : '运行中' }}</span>
+													<button class="inline-btn"
+														@click.stop="toggleLandingDetail(lp)">{{ landingDetail.id === lp.id ? '收起详情' : '详情' }}</button>
+												</div>
+												<div class="badge">{{ translateCountryToZh(normalizeText(lp.country
+													|| '未标注')) }}</div>
+											</div>
+											<div v-if="landingDetail.id === lp.id" class="landing-detail">
+												<div class="title">{{ normalizeText(lp.name || '登陆站') }}
+													<div>
+														<button class="inline-btn"
+															@click.stop="toggleItemLang('landing', lp.id)">{{
+															getItemLang('landing', lp.id) === 'zh' ? '中' : 'EN'
+															}}</button>
+														<button class="inline-btn"
+															@click.stop="copyText(lp.name || '', '名称')">复制</button>
+														<button class="inline-btn"
+															@click.stop="toggleShowLandingLabels()"
+															style="display:none;">{{ showLandingLabels ? '隐藏登陆站名' :
+															'显示登陆站名' }}</button>
+														<button class="inline-btn expand"
+															@click.stop="openLandingModal(lp)">展开</button>
+													</div>
+												</div>
+												<div class="rows">
+													<div class="row">
+														<div class="key">{{ tLabel('coords','landing', lp.id) }}
+														</div>
+														<div class="val">
+															<span v-if="lp.coords && lp.coords.length >= 2">Lon {{
+																Number(lp.coords[0]).toFixed(3) }}, Lat {{
+																Number(lp.coords[1]).toFixed(3) }}</span>
+															<button class="inline-btn"
+																@click.stop="copyText(lp.coordStr || '', '坐标')">复制</button>
+															<span v-else>-</span>
+														</div>
+													</div>
+													<div class="row" v-if="lp.id">
+														<div class="key">{{ tLabel('id','landing', lp.id) }}</div>
+														<div class="val">{{ lp.id }}</div>
+													</div>
+													<div class="row" v-if="lp.is_tbd !== undefined">
+														<div class="key">{{ tLabel('is_tbd','landing', lp.id) }}
+														</div>
+														<div class="val">{{ lp.is_tbd ? (getItemLang('landing',
+															lp.id) === 'zh' ? '是' : 'Yes') : (getItemLang('landing',
+															lp.id) === 'zh' ? '否' : 'No') }}</div>
+													</div>
+													<div class="row" v-if="landingDetail.detail?.country || lp.country">
+														<div class="key">{{ tLabel('country','landing', lp.id) }}
+														</div>
+														<div class="val">{{
+															translateCountryToZh(normalizeText(landingDetail.detail?.country
+															|| lp.country)) }}</div>
+													</div>
+													<div class="row">
+														<div class="key">局向</div>
+														<div class="val">{{ displayDirection(lp.direction ||
+															landingDetail.detail?.direction) }}</div>
+													</div>
+													<div class="row">
+														<div class="key">洲别</div>
+														<div class="val">{{ displayContinents(lp.continent ||
+															landingDetail.detail?.continent || lp.continentMacro ||
+															landingDetail.detail?.continentMacro) ||
+															displayMacroRegion(lp.continent ||
+															landingDetail.detail?.continent || lp.continentMacro ||
+															landingDetail.detail?.continentMacro) || '-' }}</div>
+													</div>
+													<div class="row clickable"
+														@click.stop="setLandingCableLimit('all')">
+														<div class="key">{{ tLabel('cables','landing', lp.id) }}
+														</div>
+														<div class="val inline-flex">{{
+															landingDetail.detail?.cables?.length || 0 }} 条 <span
+																v-if="landingDetail.loading">（加载中…）</span>
+															<select v-if="landingDetail.detail?.cables?.length"
+																v-model="landingDetail.cableLimit" @click.stop
+																class="mini-select">
+																<option :value="8">前 8 条</option>
+																<option :value="15">前 15 条</option>
+																<option value="all">全部</option>
+															</select>
+														</div>
+													</div>
+												</div>
+												<div v-if="landingDetail.detail?.cables?.length"
+													class="lines indent-lines">
+													<div class="line" v-for="(cb, idx) in landingCableLimited"
+														:key="cb.id || idx"
+														style="cursor:pointer; align-items:center; gap:8px;"
+														@click.stop="focusCableByRef(cb)">
+														<span class="name">{{ normalizeText(cb.name) }}</span>
+														<span class="meta">商用年 {{ cb.rfs_year || '-' }} <span
+																class="planned" v-if="cb.is_planned">规划中</span></span>
+													</div>
+													<div class="more"
+														v-if="landingDetail.detail.cables.length > landingCableVisibleCount">
+														等 {{ landingDetail.detail.cables.length -
+														landingCableVisibleCount }} 条…</div>
+												</div>
+											</div>
+										</div>
+									</div>
+								</div>
+								<div class="list-footer">
+									<div class="page-size" v-if="landingPaginationAdvanced">
+										每页
+										<select v-model.number="landingPageSize">
+											<option :value="20">20</option>
+											<option :value="50">50</option>
+											<option :value="100">100</option>
+										</select>
+										条｜共 {{ landingTotal }} 条
+									</div>
+									<div class="actions">
+										<button @click="prevLandingPage" :disabled="landingPage <= 1">上一页</button>
+										<button @click="nextLandingPage"
+											:disabled="landingPage >= landingTotalPages">下一页</button>
+									</div>
+									<div class="page-jump" v-if="landingPaginationAdvanced">
+										跳转
+										<input type="number" v-model.number="landingPageInput"
+											@keyup.enter="goLandingPage" min="1" :max="landingTotalPages" />
+										<button @click="goLandingPage">Go</button>
+									</div>
+									<label class="quick-toggle">
+										<input type="checkbox" v-model="landingPaginationAdvanced" />
+										高级
+									</label>
+									<div class="page-info">第 {{ landingPage }} / {{ landingTotalPages }} 页</div>
+								</div>
+							</div>
+						</div>
+						<div class="list-block" v-show="!(floatingPanel.active && floatingPanel.type==='fault')" style="grid-row:2; grid-column:1 / span 2; min-width: 280px; min-height: 200px; overflow: hidden;">
+							<div class="title-row with-search faults-header" style="flex-wrap:wrap; gap:10px;">
+								<div
+									style="display:flex; align-items:center; gap:10px; flex:1 1 auto; min-width:260px;">
+									<h3 style="margin: 0;">故障列表</h3>
+									<button class="inline-btn" title="点击拖动" @click="openFloating('fault')" style="margin-left:8px;">点击拖动</button>
+									<label class="quick-toggle" style="white-space:nowrap;">
+										<input type="checkbox" v-model="showFaultCablesOnMap" @change="updateChart" />
+										地图显示所有故障海缆
+									</label>
+									<button class="inline-btn" @click="toggleRealtime" style="margin-left:8px;">
+										{{ realtimeEnabled ? '关闭实况' : '开启实况' }}
+									</button>
+									<div class="realtime-box" style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; max-width: 300px; overflow:hidden;">
+										<span class="countdown" style="color:#8aa4c4; font-size:11px;">下次刷新：{{ Math.floor((realtimeCountdown||0)/60) }}:{{ ((realtimeCountdown||0)%60).toString().padStart(2,'0') }}</span>
+										<div class="marquee" style="flex:1 1 auto; min-width:140px; max-width:300px; overflow:hidden; white-space:nowrap;">
+											<div class="marquee-inner">{{ realtimeMessage }}</div>
+										</div>
+									</div>
+								</div>
+								<div class="searchbar" style="flex:1 1 260px;">
+									<input type="text" v-model="searchFault" placeholder="搜索故障海缆" />
+									<button v-if="searchFault" class="clear-btn" @click="searchFault=''">×</button>
+								</div>
+								<div class="fault-stats"
+									style="display:flex; align-items:center; gap:8px; color:#8aa4c4; font-size:12px; flex-wrap:wrap;">
+									<span v-if="faultStats.major" class="badge major">重大 {{ faultStats.major
+										}}</span>
+									<span v-if="faultStats.important" class="badge important">重要 {{
+										faultStats.important }}</span>
+									<span>共 {{ faultStats.total }} 条</span>
+								</div>
+							</div>
+							<div :class="['faults-split', { expanded: faultPanelExpanded && selectedFault }]">
+								<div class="faults-left">
+									<div class="list" ref="faultList">
+										<div v-if="faultsLoading" class="empty loading">
+											<span class="spinner" aria-hidden="true"></span>
+											<span class="text">故障加载中…</span>
+										</div>
+										<div v-else-if="displayFaults.length === 0" class="empty">暂无故障</div>
+										<div v-else>
+											<div class="item" v-for="(f, i) in displayFaults" :key="f.name + i"
+												:class="{ active: i === selectedFaultIndex }" :ref="'faultItem-' + i"
+												@click="selectFault(f, i)" @mouseenter="showFaultTooltip(f, $event)"
+												@mousemove="moveFaultTooltip($event)" @mouseleave="hideFaultTooltip($event)"
+												style="grid-template-columns: 1fr; align-items: flex-start; cursor: pointer; gap:6px;">
+												<div class="primary"
+													style="justify-content: space-between; width: 100%;">
+													<div
+														style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+														<span style="font-weight:700;">{{ faultTitle(f) }}</span>
+														<span v-if="faultSeverityLabel(f)" class="badge" :class="faultSeverityClass(f)">{{
+															faultSeverityLabel(f) }}</span>
+													</div>
+													<div style="display:flex; gap:6px; align-items:center;">
+														<span class="badge err">故障</span>
+													</div>
+												</div>
+												<div class="fault-meta-row">
+													<span>开始：{{ safeVal(f.start) }}</span>
+													<span>结束：{{ safeVal(f.end) }}</span>
+													<span class="pill workorder" v-if="f.workOrder">工单 {{
+														safeVal(f.workOrder) }}</span>
+													<span class="pill duration">历时 {{ liveDuration(f) }}</span>
+												</div>
+												<div class="fault-meta-row" v-if="f.involvedCable1 || f.involvedCable2 || f.involvedCable3">
+													<span v-if="f.involvedCable1" class="distance-chip location-chip">故障定位1: {{ f.involvedCable1 }} / {{ f.involvedLanding1 || '未填站点' }} / {{ f.distance1 || '--' }} km</span>
+													<span v-if="f.involvedCable2" class="distance-chip location-chip">故障定位2: {{ f.involvedCable2 }} / {{ f.involvedLanding2 || '未填站点' }} / {{ f.distance2 || '--' }} km</span>
+													<span v-if="f.involvedCable3" class="distance-chip location-chip">故障定位3: {{ f.involvedCable3 }} / {{ f.involvedLanding3 || '未填站点' }} / {{ f.distance3 || '--' }} km</span>
+												</div>
+											</div>
+										</div>
+									</div>
+								</div>
+								<div class="faults-right" v-if="faultPanelExpanded && selectedFault">
+									<div class="fault-detail">
+										<div class="title">
+											<span>{{ faultTitle(selectedFault) }}</span>
+											<div class="chips">
+												<span class="badge err">故障</span>
+												<span class="badge" :class="faultSeverityClass(selectedFault)">{{
+													faultSeverityLabel(selectedFault) }}</span>
+												<span class="pill duration">历时 {{ liveDuration(selectedFault)
+													}}</span>
+											</div>
+										</div>
+										<div class="fault-meta-grid loc-grid">
+											<div class="fault-meta-card loc-1">
+												<div class="label">故障定位1 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(1)">{{ faultEditState.active && faultEditState.index===1 ? '编辑中' : '编辑' }}</button></div>
+												<div class="value fault-loc-card">
+													<div class="fault-loc-main">
+														<span class="fault-loc-landing">{{ safeVal(selectedFault.involvedLanding1) || '未填站点' }}</span>
+														<span class="fault-loc-distance">{{ safeVal(selectedFault.distance1) || '--' }} km</span>
+													</div>
+													<div class="fault-loc-sub">海缆：{{ safeVal(selectedFault.involvedCable1) || '未填写' }}</div>
+												</div>
+											</div>
+											<div class="fault-meta-card loc-2">
+												<div class="label">故障定位2 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(2)">{{ faultEditState.active && faultEditState.index===2 ? '编辑中' : '编辑' }}</button></div>
+												<div class="value fault-loc-card">
+													<div class="fault-loc-main">
+														<span class="fault-loc-landing">{{ safeVal(selectedFault.involvedLanding2) || '未填站点' }}</span>
+														<span class="fault-loc-distance">{{ safeVal(selectedFault.distance2) || '--' }} km</span>
+													</div>
+													<div class="fault-loc-sub">海缆：{{ safeVal(selectedFault.involvedCable2) || '未填写' }}</div>
+												</div>
+											</div>
+											<div class="fault-meta-card highlight loc-3">
+												<div class="label">故障定位3 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(3)">{{ faultEditState.active && faultEditState.index===3 ? '编辑中' : '编辑' }}</button></div>
+												<div class="value fault-loc-card">
+													<div class="fault-loc-main">
+														<span class="fault-loc-landing">{{ safeVal(selectedFault.involvedLanding3) || '未填站点' }}</span>
+														<span class="fault-loc-distance">{{ safeVal(selectedFault.distance3) || '--' }} km</span>
+													</div>
+													<div class="fault-loc-sub">海缆：{{ safeVal(selectedFault.involvedCable3) || '未填写' }}</div>
+												</div>
+											</div>
+										</div>
+										<div class="fault-edit-overlay" v-if="faultEditState.active">
+											<div class="fault-edit-overlay-inner">
+												<div class="overlay-header">
+													<span>编辑故障定位 {{ faultEditState.index }}</span>
+													<button class="inline-btn" @click.stop="cancelFaultEdit">关闭</button>
+												</div>
+												<div class="fault-edit-group compact">
+													<el-select class="fault-edit-select" v-model="faultEditState.cable" filterable clearable placeholder="选择或搜索故障定位海缆" :popper-append-to-body="true" popper-class="fault-edit-select-dropdown" @change="onEditCableChange">
+														<el-option v-for="nm in cableNameOptions" :key="nm" :label="nm" :value="nm"></el-option>
+													</el-select>
+													<el-select class="fault-edit-select" v-model="faultEditState.landing" filterable clearable placeholder="选择或搜索登陆站（需先选海缆）" :popper-append-to-body="true" popper-class="fault-edit-select-dropdown">
+														<el-option v-for="nm in landingOptionsForEdit" :key="nm" :label="nm" :value="nm"></el-option>
+													</el-select>
+													<input class="fault-edit-input readonly" type="text" v-model="faultEditState.distance" placeholder="距离 (km)" readonly>
+													<input class="fault-edit-input readonly" type="text" v-model="faultEditState.pointCoord" placeholder="故障点经纬度 (Lon,Lat)" readonly>
+													<div class="fault-edit-actions">
+														<button class="inline-btn" @click.stop="startFaultPointPick()">打点</button>
+														<button class="inline-btn" :disabled="faultEditState.saving" @click.stop="saveFaultEdit()">保存</button>
+														<button class="inline-btn" @click.stop="cancelFaultEdit">取消</button>
+													</div>
+													<span class="meta err" v-if="faultEditState.error" style="color:#ff9f7f;">{{ faultEditState.error }}</span>
+												</div>
+											</div>
+										</div>
+										<div class="rows">
+											<div class="row">
+												<div class="key">涉及海缆</div>
+												<div class="val">{{ safeVal(selectedFault.cableName ||
+													selectedFault.name) }} <button class="inline-btn"
+														@click.stop="copyText(selectedFault.cableName || selectedFault.name || '', '涉及海缆')">复制</button>
+												</div>
+											</div>
+											<div class="row">
+												<div class="key">故障描述</div>
+												<div class="val">{{ safeVal(selectedFault.desc) }} <button
+														class="inline-btn"
+														@click.stop="copyText(selectedFault.desc || '', '故障描述')">复制</button>
+												</div>
+											</div>
+											<div class="row">
+												<div class="key">是否重大</div>
+												<div class="val">{{ safeVal(selectedFault.isMajor) }}</div>
+											</div>
+											<div class="row">
+												<div class="key">故障原因</div>
+												<div class="val">{{ safeVal(selectedFault.cause) }} <button
+														class="inline-btn"
+														@click.stop="copyText(selectedFault.cause || '', '故障原因')">复制</button>
+												</div>
+											</div>
+											<div class="row">
+												<div class="key">处理进展</div>
+												<div class="val">{{ safeVal(selectedFault.progress) }} <button
+														class="inline-btn"
+														@click.stop="copyText(selectedFault.progress || '', '处理进展')">复制</button>
+												</div>
+											</div>
+											<div class="row">
+												<div class="key">最近一次修改者</div>
+												<div class="val">{{ safeVal(selectedFault.lastModifier || (selectedFault.raw && selectedFault.raw['大屏最近一次操作用户'])) }} <button
+													class="inline-btn"
+													@click.stop="copyText(selectedFault.lastModifier || (selectedFault.raw && selectedFault.raw['大屏最近一次操作用户']) || '', '最近一次修改者')">复制</button></div>
+											</div>
+											<div class="row">
+												<div class="key">业务影响</div>
+												<div class="val">{{ safeVal(selectedFault.impact) }} <button
+														class="inline-btn"
+														@click.stop="copyText(selectedFault.impact || '', '业务影响')">复制</button>
+												</div>
+											</div>
+											<div class="row">
+												<div class="key">备注</div>
+												<div class="val">{{ safeVal(selectedFault.remark) }} <button
+														class="inline-btn"
+														@click.stop="copyText(selectedFault.remark || '', '备注')">复制</button>
+												</div>
+											</div>
+											<div class="row" v-if="selectedFault.registrar">
+												<div class="key">登记人</div>
+												<div class="val">{{ safeVal(selectedFault.registrar) }} <button
+														class="inline-btn"
+														@click.stop="copyText(selectedFault.registrar || '', '登记人')">复制</button>
+												</div>
+											</div>
+											<div class="row" v-if="selectedFault.sameRoute">
+												<div class="key">同路由海缆段</div>
+												<div class="val">{{ safeVal(selectedFault.sameRoute) }} <button
+														class="inline-btn"
+														@click.stop="copyText(selectedFault.sameRoute || '', '同路由海缆段')">复制</button>
+												</div>
+											</div>
+										</div>
+									</div>
+								</div>
+							</div>
+							<div v-if="faultTooltip.show" ref="faultTooltip" class="tooltip-box fault-tooltip" @mouseenter="faultTooltip.show = true" @mouseleave="hideFaultTooltip($event)"
+							:style="{ left: faultTooltip.left + 'px', top: faultTooltip.top + 'px' }">
+								<div class="title">
+									<span class="pill" :style="typeThemeStyle('cable')">故障</span>
+									<span>{{ faultTitle(faultTooltip.fault) }}</span>
+								</div>
+								<div class="fault-tooltip-body scrollable">
+									<div class="fault-loc-list">
+										<template v-if="faultTooltipCables(faultTooltip.fault).length">
+											<div class="loc-card" v-for="(loc, idx) in faultTooltipCables(faultTooltip.fault)" :key="idx">
+												<div class="loc-head">
+													<span class="pill danger-pill">故障定位 {{ idx + 1 }}</span>
+													<span class="loc-name">{{ safeVal(loc.cable) }}</span>
+												</div>
+												<div class="loc-meta">
+													<span class="chip">登陆站：{{ loc.landing || '未填站点' }}</span>
+													<span class="chip">距离：{{ loc.distance || '--' }} km</span>
+												</div>
+											</div>
+										</template>
+										<div v-else class="empty">暂未故障定点</div>
+									</div>
+									<div class="fault-info-list">
+										<div class="row">
+											<div class="key">工单号</div>
+											<div class="val">{{ safeVal(faultTooltip.fault?.workOrder) }}</div>
+										</div>
+										<div class="row">
+											<div class="key">开始时间</div>
+											<div class="val">{{ safeVal(faultTooltip.fault?.start) }}</div>
+										</div>
+										<div class="row">
+											<div class="key">结束时间</div>
+											<div class="val">{{ safeVal(faultTooltip.fault?.end) }}</div>
+										</div>
+										<div class="row">
+											<div class="key">故障原因</div>
+											<div class="val">{{ safeVal(faultTooltip.fault?.cause) }}</div>
+										</div>
+										<div class="row">
+											<div class="key">处理进展</div>
+											<div class="val">{{ safeVal(faultTooltip.fault?.progress) }}</div>
+										</div>
+										<div class="row">
+											<div class="key">业务影响</div>
+											<div class="val">{{ safeVal(faultTooltip.fault?.impact) }}</div>
+										</div>
+										<div class="row">
+											<div class="key">备注</div>
+											<div class="val">{{ safeVal(faultTooltip.fault?.remark) }}</div>
+										</div>
+										<div class="row">
+											<div class="key">是否重大</div>
+											<div class="val">{{ safeVal(faultTooltip.fault?.isMajor) }}</div>
+										</div>
+									</div>
+								</div>
+							</div>
+						</div>
+					</div>
+					<div v-if="false && landingTooltip.show" ref="landingTooltip" class="tooltip-box"
+						:style="[{ left: landingTooltip.left + 'px', top: landingTooltip.top + 'px' }, tooltipThemeStyle('landing', landingTooltip.lp)]">
+						<div class="title">
+							<span class="pill" :style="pillThemeStyle('landing', landingTooltip.lp)">登陆站</span>
+							<span>{{ normalizeText(landingTooltip.lp?.name || '登陆站') }}</span>
+							<span class="pill" v-if="landingTooltip.lp?.country || landingTooltip.detail?.country">{{
+								translateCountryToZh(normalizeText(landingTooltip.lp?.country ||
+								landingTooltip.detail?.country)) }}</span>
+						</div>
+						<div class="row">
+							<div class="key">经纬度</div>
+							<div class="val">
+								<span v-if="landingTooltip.lp?.coords && landingTooltip.lp.coords.length >= 2">Lon
+									{{ Number(landingTooltip.lp.coords[0]).toFixed(2) }}, Lat {{
+									Number(landingTooltip.lp.coords[1]).toFixed(2) }}</span>
+								<span v-else>-</span>
+							</div>
+						</div>
+						<div class="row">
+							<div class="key">局向</div>
+							<div class="val">{{ displayDirection(landingTooltip.lp?.direction ||
+								landingTooltip.detail?.direction) }}</div>
+						</div>
+						<div class="row">
+							<div class="key">洲别</div>
+							<div class="val">{{ displayContinents(landingTooltip.lp?.continent ||
+								landingTooltip.detail?.continent || landingTooltip.lp?.continentMacro ||
+								landingTooltip.detail?.continentMacro) ||
+								displayMacroRegion(landingTooltip.lp?.continent || landingTooltip.detail?.continent
+								|| landingTooltip.lp?.continentMacro || landingTooltip.detail?.continentMacro) ||
+								'-' }}</div>
+						</div>
+						<div class="row">
+							<div class="key">关联海缆</div>
+							<div class="val"><strong>{{ landingTooltip.detail?.cables?.length || 0 }}</strong> 条
+							</div>
+						</div>
+						<div class="tooltip-list" v-if="tooltipLandingCables.length">
+							<label class="chip" v-for="(cb, idx) in tooltipLandingCables" :key="cb.id || idx"
+								@click.stop>
+								<input type="checkbox" v-model="landingTooltip.selectedCableIds"
+									:value="cb.id || cb.name" style="margin-right:6px;">
+								<span class="name" @click.stop="focusCableByRef(cb)">{{ cb.name }}</span>
+								<span class="meta">{{ cb.rfs_year || '-' }}<span class="planned" v-if="cb.is_planned"
+										style="margin-left:6px;">规划中</span></span>
+							</label>
+						</div>
+					</div>
+					<div v-if="false && cableTooltip.show" ref="cableTooltip" class="tooltip-box"
+						:style="[{ left: cableTooltip.left + 'px', top: cableTooltip.top + 'px' }, tooltipThemeStyle('cable', cableTooltip.line)]">
+						<div class="title">
+							<span class="pill" :style="typeThemeStyle('cable')">海缆</span>
+							<span>{{ cableTooltip.line?.name || '海缆' }}</span>
+							<span class="pill" :class="cableTooltip.line?.ownershipClass"
+								v-if="cableTooltip.line?.ownership">{{ cableTooltip.line?.ownership }}</span>
+						</div>
+						<div class="row">
+							<div class="key">长度</div>
+							<div class="val">{{ cableTooltip.detail?.length || '-' }}</div>
+						</div>
+						<div class="row">
+							<div class="key">直线距离</div>
+							<div class="val">{{ cableTooltip.line?.km || 0 }} km</div>
+						</div>
+						<div class="row">
+							<div class="key">商用年</div>
+							<div class="val">{{ cableTooltip.detail?.rfs_year || '-' }}</div>
+						</div>
+						<div class="row">
+							<div class="key">局向</div>
+							<div class="val">{{ displayDirection(cableTooltip.line?.direction ||
+								cableTooltip.detail?.direction) }}</div>
+						</div>
+						<div class="row">
+							<div class="key">洲别</div>
+							<div class="val">{{ displayContinents(cableTooltip.line?.continents ||
+								cableTooltip.detail?.continents || cableTooltip.line?.continent ||
+								cableTooltip.detail?.continent) || displayMacroRegion(cableTooltip.line?.continent
+								|| cableTooltip.detail?.continent) || '-' }}</div>
+						</div>
+						<div class="row">
+							<div class="key">登陆点</div>
+							<div class="val"><strong>{{ landingCount(cableTooltip.detail || cableDetail.detail)
+									}}</strong> 个</div>
+						</div>
+						<div class="tooltip-list" v-if="tooltipCableLandings.length">
+							<div class="chip" v-for="(lp, idx) in tooltipCableLandings" :key="lp.id || idx"
+								@click.stop="focusLandingByRef(lp)">
+								<span class="name">{{ lp.name }}</span>
+								<span class="meta">{{ translateCountryToZh(normalizeText(lp.country || '-'))
+									}}</span>
+							</div>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<!-- 浮动列表面板（可拖拽/缩放） -->
+			<div v-if="floatingPanel.active" class="floating-panel" :style="{ left: floatingPanel.x + 'px', top: floatingPanel.y + 'px', width: floatingPanel.w + 'px', height: floatingPanel.h + 'px' }">
+				<div class="fp-header" @mousedown.stop="startFpDrag">
+					<div>
+						<span v-if="floatingPanel.type==='cable'">海缆列表</span>
+						<span v-else-if="floatingPanel.type==='landing'">登陆站列表</span>
+						<span v-else-if="floatingPanel.type==='fault'">故障列表</span>
+					</div>
+					<div>
+						<button class="inline-btn" @click.stop="closeFloating">关闭</button>
+					</div>
+				</div>
+				<div class="fp-body" @mousemove.stop @mousedown.stop>
+					<!-- 浮动：海缆列表 -->
+					<div v-if="floatingPanel.type==='cable'">
+						<div class="title-row with-search">
+							<div class="searchbar" style="margin-left:auto;">
+								<input type="text" v-model="searchCable" placeholder="搜索海缆名称" />
+								<button v-if="searchCable" class="clear-btn" @click="searchCable=''">×</button>
+							</div>
+						</div>
+						<div class="list">
+							<div v-if="cablePageItems.length === 0" class="empty">暂无数据</div>
+							<div v-else>
+								<div v-for="(line, i) in cablePageItems" :key="(line.feature_id || line.id || line.name) + '-' + i">
+									<div class="item" :class="{ expanded: cableDetail.id === line.id, active: (focusMode==='cable' && focusedCableId===line.id) }"
+										 @click="onCableItemClick(line)"
+										 @mouseenter="showCableTooltip(line, $event)" @mousemove="moveCableTooltip($event)" @mouseleave="hideCableTooltip">
+										<div class="primary" style="gap:10px;">
+											<span>{{ line.name }}</span>
+											<span class="ownership-tag" :class="line.ownershipClass">{{ line.ownership || '非权益' }}</span>
+											<button class="inline-btn" @click.stop="toggleCableDetail(line)">详情</button>
+										</div>
+										<div class="badge" :class="{ ok: line.status==='ok', err: line.status==='err' }">{{ line.status==='ok' ? '运行中' : '故障' }}</div>
+									</div>
+									<div v-if="cableDetail.id === line.id" class="cable-detail">
+										<div class="title">{{ line.name || '海缆' }}
+											<div>
+												<button class="inline-btn" @click.stop="toggleItemLang('cable', line.id)">{{ getItemLang('cable', line.id) === 'zh' ? '中' : 'EN' }}</button>
+												<button class="inline-btn" @click.stop="copyText(line.name || '', '名称')">复制</button>
+												<button class="inline-btn expand" @click.stop="openCableModal(line)">展开</button>
+											</div>
+										</div>
+										<div class="rows">
+											<div class="row"><div class="key">编号</div><div class="val">{{ line.id }}</div></div>
+											<div class="row"><div class="key">局向</div><div class="val">{{ displayDirection(line.direction || cableDetail.detail?.direction) }}</div></div>
+											<div class="row"><div class="key">洲别</div><div class="val">{{ displayContinents(line.continents || cableDetail.detail?.continents || line.continent || cableDetail.detail?.continent) || displayMacroRegion(line.continent || cableDetail.detail?.continent) || '-' }}</div></div>
+											<div class="row" v-if="cableDetail.detail?.length"><div class="key">长度</div><div class="val">{{ cableDetail.detail.length }}</div></div>
+											<div class="row" v-if="getCableUrl(line)"><div class="key">官网</div><div class="val"><button class="link-btn" @click.stop="openUrl(getCableUrl(line))">官网</button></div></div>
+										</div>
+										<div v-if="cableDetail.loading" style="color:#8aa4c4; margin-top:4px;">详情加载中…</div>
+									</div>
+								</div>
+							</div>
+						</div>
+						<div class="list-footer">
+							<div class="page-size" v-if="cablePaginationAdvanced">
+								每页
+								<select v-model.number="cablePageSize">
+									<option :value="20">20</option>
+									<option :value="50">50</option>
+									<option :value="100">100</option>
+								</select>
+								条｜共 {{ cableTotal }} 条
+							</div>
+							<div class="actions">
+								<button @click="prevCablePage" :disabled="cablePage <= 1">上一页</button>
+								<button @click="nextCablePage" :disabled="cablePage >= cableTotalPages">下一页</button>
+							</div>
+							<div class="page-jump" v-if="cablePaginationAdvanced">
+								跳转
+								<input type="number" v-model.number="cablePageInput" @keyup.enter="goCablePage" min="1" :max="cableTotalPages" />
+								<button @click="goCablePage">Go</button>
+							</div>
+							<label class="quick-toggle">
+								<input type="checkbox" v-model="cablePaginationAdvanced" />
+								高级
+							</label>
+							<div class="page-info">第 {{ cablePage }} / {{ cableTotalPages }} 页</div>
+						</div>
+					</div>
+					<!-- 浮动：登陆站列表 -->
+					<div v-else-if="floatingPanel.type==='landing'">
+						<div class="title-row with-search">
+							<div class="searchbar" style="margin-left:auto;">
+								<input type="text" v-model="searchLanding" placeholder="搜索登陆站坐标或名称" />
+								<button v-if="searchLanding" class="clear-btn" @click="searchLanding=''">×</button>
+							</div>
+						</div>
+						<div class="list">
+							<div v-if="landingPageItems.length === 0" class="empty">暂无数据</div>
+							<div v-else>
+								<div v-for="(lp, i) in landingPageItems" :key="lp.coordStr + i">
+									<div class="item" :class="{ expanded: landingDetail.id === lp.id, active: (focusMode==='landing' && focusedLanding && focusedLanding.id===lp.id) }"
+										 @click="onLandingItemClick(lp)"
+										 @mouseenter="showLandingTooltip(lp, $event)" @mousemove="moveLandingTooltip($event)" @mouseleave="hideLandingTooltip">
+										<div class="primary">
+											<span>{{ normalizeText(lp.name || ('登陆站 ' + (i+1))) }}</span>
+											<span class="ownership-tag" :class="lp.ownershipClass">{{ lp.ownership || '非权益' }}</span>
+											<button class="inline-btn" @click.stop="toggleLandingDetail(lp)">详情</button>
+										</div>
+										<div class="badge">{{ translateCountryToZh(normalizeText(lp.country || '未标注')) }}</div>
+									</div>
+									<div v-if="landingDetail.id === lp.id" class="landing-detail">
+										<div class="title">{{ normalizeText(lp.name || '登陆站') }}
+											<div>
+												<button class="inline-btn" @click.stop="toggleItemLang('landing', lp.id)">{{ getItemLang('landing', lp.id) === 'zh' ? '中' : 'EN' }}</button>
+												<button class="inline-btn" @click.stop="copyText(lp.name || '', '名称')">复制</button>
+												<button class="inline-btn expand" @click.stop="openLandingModal(lp)">展开</button>
+											</div>
+										</div>
+										<div class="rows">
+											<div class="row"><div class="key">坐标</div><div class="val"><span v-if="lp.coords && lp.coords.length >= 2">Lon {{ Number(lp.coords[0]).toFixed(3) }}, Lat {{ Number(lp.coords[1]).toFixed(3) }}</span><span v-else>-</span></div></div>
+											<div class="row" v-if="lp.id"><div class="key">编号</div><div class="val">{{ lp.id }}</div></div>
+											<div class="row"><div class="key">局向</div><div class="val">{{ displayDirection(lp.direction || landingDetail.detail?.direction) }}</div></div>
+											<div class="row"><div class="key">洲别</div><div class="val">{{ displayContinents(lp.continent || landingDetail.detail?.continent || lp.continentMacro || landingDetail.detail?.continentMacro) || displayMacroRegion(lp.continent || landingDetail.detail?.continent || lp.continentMacro || landingDetail.detail?.continentMacro) || '-' }}</div></div>
+										</div>
+										<div v-if="landingDetail.detail?.cables?.length" class="lines indent-lines">
+											<div class="line" v-for="(cb, idx) in landingCableLimited" :key="cb.id || idx" style="cursor:pointer; align-items:center; gap:8px;" @click.stop="focusCableByRef(cb)">
+												<span class="name">{{ normalizeText(cb.name) }}</span>
+												<span class="meta">商用年 {{ cb.rfs_year || '-' }} <span class="planned" v-if="cb.is_planned">规划中</span></span>
+											</div>
+										</div>
+										<div v-if="landingDetail.loading" style="color:#8aa4c4; margin-top:4px;">详情加载中…</div>
+									</div>
+								</div>
+							</div>
+						</div>
+						<div class="list-footer">
+							<div class="page-size" v-if="landingPaginationAdvanced">
+								每页
+								<select v-model.number="landingPageSize">
+									<option :value="20">20</option>
+									<option :value="50">50</option>
+									<option :value="100">100</option>
+								</select>
+								条｜共 {{ landingTotal }} 条
+							</div>
+							<div class="actions">
+								<button @click="prevLandingPage" :disabled="landingPage <= 1">上一页</button>
+								<button @click="nextLandingPage" :disabled="landingPage >= landingTotalPages">下一页</button>
+							</div>
+							<div class="page-jump" v-if="landingPaginationAdvanced">
+								跳转
+								<input type="number" v-model.number="landingPageInput" @keyup.enter="goLandingPage" min="1" :max="landingTotalPages" />
+								<button @click="goLandingPage">Go</button>
+							</div>
+							<label class="quick-toggle">
+								<input type="checkbox" v-model="landingPaginationAdvanced" />
+								高级
+							</label>
+							<div class="page-info">第 {{ landingPage }} / {{ landingTotalPages }} 页</div>
+						</div>
+					</div>
+					<!-- 浮动：故障列表 -->
+					<div v-else-if="floatingPanel.type==='fault'">
+						<div class="title-row with-search faults-header" style="flex-wrap:wrap; gap:10px;">
+							<div style="display:flex; align-items:center; gap:10px; flex:1 1 auto; min-width:260px;">
+								<h3 style="margin: 0;">故障列表</h3>
+								<label class="quick-toggle" style="white-space:nowrap;">
+									<input type="checkbox" v-model="showFaultCablesOnMap" @change="updateChart" />
+									地图显示所有故障海缆
+								</label>
+							</div>
+							<div class="searchbar" style="flex:1 1 260px;">
+								<input type="text" v-model="searchFault" placeholder="搜索故障海缆" />
+								<button v-if="searchFault" class="clear-btn" @click="searchFault=''">×</button>
+							</div>
+						</div>
+						<div class="list" ref="faultList">
+							<div v-if="faultsLoading" class="empty loading">
+								<span class="spinner" aria-hidden="true"></span>
+								<span class="text">故障加载中…</span>
+							</div>
+							<div v-else-if="displayFaults.length === 0" class="empty">暂无故障</div>
+							<div v-else>
+								<div class="item" v-for="(f, i) in displayFaults" :key="f.name + i"
+									 :class="{ active: i === selectedFaultIndex }" :ref="'faultItem-' + i"
+									 @mouseenter="showFaultTooltip(f, $event)" @mousemove="moveFaultTooltip($event)" @mouseleave="hideFaultTooltip"
+									 @click="selectFault(f, i)"
+									 style="grid-template-columns: 1fr; align-items: flex-start; cursor: pointer; gap:6px;">
+									<div class="primary" style="justify-content: space-between; width: 100%;">
+										<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+											<span style="font-weight:700;">{{ faultTitle(f) }}</span>
+											<span v-if="faultSeverityLabel(f)" class="badge" :class="faultSeverityClass(f)">{{ faultSeverityLabel(f) }}</span>
+										</div>
+										<div style="display:flex; gap:6px; align-items:center;">
+											<span class="badge err">故障</span>
+											<button class="inline-btn" style="margin-left:8px;" @click.stop="toggleFaultDetail(i)">{{ selectedFaultIndex===i ? '收起详情' : '详情' }}</button>
+										</div>
+									</div>
+									<div class="fault-meta-row">
+										<span>开始：{{ safeVal(f.start) }}</span>
+										<span>结束：{{ safeVal(f.end) }}</span>
+										<span class="pill workorder" v-if="f.workOrder">工单 {{ safeVal(f.workOrder) }}</span>
+										<span class="pill duration">历时 {{ liveDuration(f) }}</span>
+									</div>
+									<!-- 拖动面板中也默认在条目下内联展开详情 -->
+									<div v-if="faultPanelExpanded && selectedFaultIndex===i && !faultOverlayMode" class="fault-detail inline">
+										<div class="title">
+											<span>{{ faultTitle(f) }}</span>
+											<div class="chips">
+												<span class="badge err">故障</span>
+												<span v-if="faultSeverityLabel(f)" class="badge" :class="faultSeverityClass(f)">{{ faultSeverityLabel(f) }}</span>
+												<span class="pill duration">历时 {{ liveDuration(f) }}</span>
+											</div>
+										</div>
+										<div class="fault-meta-grid loc-grid">
+											<div class="fault-meta-card loc-1">
+												<div class="label">故障定位1 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(1)">{{ faultEditState.active && faultEditState.index===1 ? '编辑中' : '编辑' }}</button></div>
+												<div class="value fault-loc-card">
+													<div class="fault-loc-main">
+														<span class="fault-loc-landing">{{ safeVal(f.involvedLanding1) || '未填站点' }}</span>
+														<span class="fault-loc-distance">{{ safeVal(f.distance1) || '--' }} km</span>
+													</div>
+													<div class="fault-loc-sub">海缆：{{ safeVal(f.involvedCable1) || '未填写' }}</div>
+												</div>
+											</div>
+											<div class="fault-meta-card loc-2">
+												<div class="label">故障定位2 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(2)">{{ faultEditState.active && faultEditState.index===2 ? '编辑中' : '编辑' }}</button></div>
+												<div class="value fault-loc-card">
+													<div class="fault-loc-main">
+														<span class="fault-loc-landing">{{ safeVal(f.involvedLanding2) || '未填站点' }}</span>
+														<span class="fault-loc-distance">{{ safeVal(f.distance2) || '--' }} km</span>
+													</div>
+													<div class="fault-loc-sub">海缆：{{ safeVal(f.involvedCable2) || '未填写' }}</div>
+												</div>
+											</div>
+											<div class="fault-meta-card highlight loc-3">
+												<div class="label">故障定位3 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(3)">{{ faultEditState.active && faultEditState.index===3 ? '编辑中' : '编辑' }}</button></div>
+												<div class="value fault-loc-card">
+													<div class="fault-loc-main">
+														<span class="fault-loc-landing">{{ safeVal(f.involvedLanding3) || '未填站点' }}</span>
+														<span class="fault-loc-distance">{{ safeVal(f.distance3) || '--' }} km</span>
+													</div>
+													<div class="fault-loc-sub">海缆：{{ safeVal(f.involvedCable3) || '未填写' }}</div>
+												</div>
+											</div>
+										</div>
+										<div class="fault-edit-overlay" v-if="isCompactMode && faultPanelExpanded && selectedFaultIndex===i && !faultOverlayMode && faultEditState.active">
+											<div class="fault-edit-overlay-inner">
+												<div class="overlay-header">
+													<span>编辑故障定位 {{ faultEditState.index }}</span>
+													<button class="inline-btn" @click.stop="cancelFaultEdit">关闭</button>
+												</div>
+												<div class="fault-edit-group compact">
+													<el-select class="fault-edit-select" v-model="faultEditState.cable" filterable clearable placeholder="选择或搜索故障定位海缆" :popper-append-to-body="true" popper-class="fault-edit-select-dropdown" @change="onEditCableChange">
+														<el-option v-for="nm in cableNameOptions" :key="nm" :label="nm" :value="nm"></el-option>
+													</el-select>
+													<el-select class="fault-edit-select" v-model="faultEditState.landing" filterable clearable placeholder="选择或搜索登陆站（需先选海缆）" :popper-append-to-body="true" popper-class="fault-edit-select-dropdown">
+														<el-option v-for="nm in landingOptionsForEdit" :key="nm" :label="nm" :value="nm"></el-option>
+													</el-select>
+													<input class="fault-edit-input readonly" type="text" v-model="faultEditState.distance" placeholder="距离 (km)" readonly>
+													<input class="fault-edit-input readonly" type="text" v-model="faultEditState.pointCoord" placeholder="故障点经纬度 (Lon,Lat)" readonly>
+													<div class="fault-edit-actions">
+														<button class="inline-btn" @click.stop="startFaultPointPick()">打点</button>
+														<button class="inline-btn" :disabled="faultEditState.saving" @click.stop="saveFaultEdit()">保存</button>
+														<button class="inline-btn" @click.stop="cancelFaultEdit">取消</button>
+													</div>
+													<span class="meta err" v-if="faultEditState.error" style="color:#ff9f7f;">{{ faultEditState.error }}</span>
+												</div>
+											</div>
+										</div>
+										<div class="rows">
+											<div class="row"><div class="key">涉及海缆</div><div class="val">{{ safeVal(f.cableName || f.name) }}</div></div>
+											<div class="row"><div class="key">故障描述</div><div class="val">{{ safeVal(f.desc) }}</div></div>
+											<div class="row"><div class="key">故障原因</div><div class="val">{{ safeVal(f.cause) }}</div></div>
+											<div class="row"><div class="key">处理进展</div><div class="val">{{ safeVal(f.progress) }}</div></div>
+											<div class="row"><div class="key">最近一次修改者</div><div class="val">{{ safeVal(f.lastModifier || (f.raw && f.raw['大屏最近一次操作用户'])) }}</div></div>
+											<div class="row"><div class="key">业务影响</div><div class="val">{{ safeVal(f.impact) }}</div></div>
+										</div>
+										<div style="display:flex; justify-content:flex-end; gap:10px; margin-top:8px;">
+											<button class="inline-btn" @click.stop="expandFaultOverlay()">展开到大窗</button>
+											<button class="inline-btn" @click.stop="toggleFaultDetail(i)">收起</button>
+										</div>
+									</div>
+								</div>
+							</div>
+						</div>
+						<div v-if="floatingPanel.type==='fault' && faultPanelExpanded && faultOverlayMode && selectedFault" class="compact-fault-overlay" style="position:absolute; inset:48px 10px 18px 10px;">
+							<div class="fault-detail">
+								<button class="close overlay-close" @click.stop="toggleFaultDetail(selectedFaultIndex)">×</button>
+								<div class="title">
+									<span>{{ faultTitle(selectedFault) }}</span>
+									<div class="chips">
+										<span class="badge err">故障</span>
+											<span v-if="faultSeverityLabel(selectedFault)" class="badge" :class="faultSeverityClass(selectedFault)">{{ faultSeverityLabel(selectedFault) }}</span>
+										<span class="pill duration">历时 {{ liveDuration(selectedFault) }}</span>
+									</div>
+								</div>
+								<div class="fault-meta-grid loc-grid">
+									<div class="fault-meta-card loc-1">
+										<div class="label">故障定位1 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(1)">{{ faultEditState.active && faultEditState.index===1 ? '编辑中' : '编辑' }}</button></div>
+										<div class="value fault-loc-card">
+											<div class="fault-loc-main">
+												<span class="fault-loc-landing">{{ safeVal(selectedFault.involvedLanding1) || '未填站点' }}</span>
+												<span class="fault-loc-distance">{{ safeVal(selectedFault.distance1) || '--' }} km</span>
+											</div>
+											<div class="fault-loc-sub">海缆：{{ safeVal(selectedFault.involvedCable1) || '未填写' }}</div>
+										</div>
+									</div>
+									<div class="fault-meta-card loc-2">
+										<div class="label">故障定位2 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(2)">{{ faultEditState.active && faultEditState.index===2 ? '编辑中' : '编辑' }}</button></div>
+										<div class="value fault-loc-card">
+											<div class="fault-loc-main">
+												<span class="fault-loc-landing">{{ safeVal(selectedFault.involvedLanding2) || '未填站点' }}</span>
+												<span class="fault-loc-distance">{{ safeVal(selectedFault.distance2) || '--' }} km</span>
+											</div>
+											<div class="fault-loc-sub">海缆：{{ safeVal(selectedFault.involvedCable2) || '未填写' }}</div>
+										</div>
+									</div>
+									<div class="fault-meta-card highlight loc-3">
+										<div class="label">故障定位3 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(3)">{{ faultEditState.active && faultEditState.index===3 ? '编辑中' : '编辑' }}</button></div>
+										<div class="value fault-loc-card">
+											<div class="fault-loc-main">
+												<span class="fault-loc-landing">{{ safeVal(selectedFault.involvedLanding3) || '未填站点' }}</span>
+												<span class="fault-loc-distance">{{ safeVal(selectedFault.distance3) || '--' }} km</span>
+											</div>
+											<div class="fault-loc-sub">海缆：{{ safeVal(selectedFault.involvedCable3) || '未填写' }}</div>
+										</div>
+									</div>
+								</div>
+								<div class="rows">
+									<div class="row"><div class="key">涉及海缆</div><div class="val">{{ safeVal(selectedFault.cableName || selectedFault.name) }}</div></div>
+									<div class="row"><div class="key">故障描述</div><div class="val">{{ safeVal(selectedFault.desc) }}</div></div>
+									<div class="row"><div class="key">是否重大</div><div class="val">{{ safeVal(selectedFault.isMajor) }}</div></div>
+									<div class="row"><div class="key">故障原因</div><div class="val">{{ safeVal(selectedFault.cause) }}</div></div>
+									<div class="row"><div class="key">处理进展</div><div class="val">{{ safeVal(selectedFault.progress) }}</div></div>
+									<div class="row"><div class="key">最近一次修改者</div><div class="val">{{ safeVal(selectedFault.lastModifier || (selectedFault.raw && selectedFault.raw['大屏最近一次操作用户'])) }}</div></div>
+									<div class="row"><div class="key">业务影响</div><div class="val">{{ safeVal(selectedFault.impact) }}</div></div>
+									<div class="row"><div class="key">备注</div><div class="val">{{ safeVal(selectedFault.remark) }}</div></div>
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
+				<div class="fp-resizer" @mousedown.stop="startFpResize"></div>
+			</div>
+
+			<!-- 紧凑模式：合并面板，悬浮在左侧，可收起 -->
+			<div v-if="isCompactMode" class="compact-panel panel" :class="{ collapsed: compactCollapsed }" :style="{ width: compactPanelWidth + 'px' }">
+				<div class="compact-drawer-handle" @click="compactCollapsed = !compactCollapsed">{{ compactCollapsed ?
+					'>' : '<' }}</div>
+				<div class="compact-resizer" @mousedown="startCompactResize"></div>
+						<div class="panel-header"
+							style="padding: 12px 14px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
+						<div style="display:flex; align-items:center; gap:10px;"><span class="accent"></span>控制台</div>
+						<div style="display:flex; gap:8px; align-items:center;">
+							<button class="inline-btn" @click.stop="restartApp"><i class="el-icon-switch-button" aria-hidden="true" style="margin-right:4px;"></i>重启</button>
+							<button class="inline-btn" @click.stop="resetAllFilters">重置筛选</button>
+						</div>
+						</div>
+					<div class="panel-body custom-scroll-hidden" style="padding: 10px;">
+							<div class="compact-tabs">
+								<button class="tab-btn" :class="{ active: compactActiveTab==='overview' }"
+									@click="setCompactTab('overview')">概览/筛选</button>
+								<button class="tab-btn" :class="{ active: compactActiveTab==='cable' }"
+									@click="setCompactTab('cable')">海缆列表</button>
+								<button class="tab-btn" :class="{ active: compactActiveTab==='landing' }"
+									@click="setCompactTab('landing')">登陆站</button>
+								<button class="tab-btn" :class="{ active: compactActiveTab==='fault' }"
+									@click="setCompactTab('fault')">故障</button>
+							</div>
+							<div class="compact-body">
+								<div v-show="compactActiveTab==='overview'">
+									<div class="overview">
+										<div class="title"><span class="accent"></span>海陆缆整体情况</div>
+										<div class="metrics">
+											<div class="metric">
+												<div class="label">权益</div>
+												<div class="value">{{ formatG(overviewMetrics.equityTotal) }}</div>
+											</div>
+											<div class="metric">
+												<div class="label">点亮</div>
+												<div class="value">{{ formatG(overviewMetrics.lightUpBandwidthTotal) }}
+												</div>
+											</div>
+											<div class="metric">
+												<div class="label">已用</div>
+												<div class="value">{{ formatG(overviewMetrics.usingBandwidthTotal) }}
+												</div>
+											</div>
+											<div class="metric">
+												<div class="label">海陆缆总长</div>
+												<div class="value">{{ formatKm(overviewMetrics.lengthTotal) }}</div>
+											</div>
+											<div class="metric">
+												<div class="label">利用率</div>
+												<div class="value">{{
+													formatPercent(overviewMetrics.utilizationRateTotal) }}</div>
+											</div>
+											<div class="metric">
+												<div class="label">业务总数</div>
+												<div class="value">{{ formatInt(overviewMetrics.businessesTotal) }}
+												</div>
+											</div>
+										</div>
+										<div class="regions">
+											<label class="chip" v-for="r in ['美国','欧洲','亚太','澳洲','其他']" :key="r">
+												<input type="radio" name="overviewRegionCompact" :value="r"
+													v-model="overviewRegion"> {{ r }}
+											</label>
+										</div>
+									</div>
+									<div class="controls">
+										<div class="block">
+											<div
+												style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+												<h3>筛选
+													<label class="inline-btn"
+														style="display:inline-flex; align-items:center; gap:6px;">
+														<input type="checkbox" v-model="showCables"
+															@change="updateChart"> 海缆
+													</label>
+													<label class="inline-btn"
+														style="display:inline-flex; align-items:center; gap:6px;">
+														<input type="checkbox" v-model="showLandings"
+															@change="updateChart"> 登陆站
+													</label>
+												</h3>
+												<div style="display:flex; gap:6px; flex-wrap:wrap;">
+													<button class="inline-btn"
+														@click.stop="selectAllOwnerships">权益全选</button>
+													<button class="inline-btn"
+														@click.stop="selectAllTypes">类型全选</button>
+												</div>
+											</div>
+											<div class="filters" style="margin-top:6px;">
+												<label class="ownership-self">
+													<input type="checkbox" value="自建" v-model="selectedOwnerships"> 自建
+													<span class="only-btn"
+														@click.stop.prevent="selectOnlyOwnership('自建')">只选</span>
+												</label>
+												<label class="ownership-co">
+													<input type="checkbox" value="合建" v-model="selectedOwnerships"> 合建
+													<span class="only-btn"
+														@click.stop.prevent="selectOnlyOwnership('合建')">只选</span>
+												</label>
+												<label class="ownership-rent">
+													<input type="checkbox" value="租用" v-model="selectedOwnerships"> 租用
+													<span class="only-btn"
+														@click.stop.prevent="selectOnlyOwnership('租用')">只选</span>
+												</label>
+												<label class="ownership-none">
+													<input type="checkbox" value="非权益" v-model="selectedOwnerships"> 非权益
+													<span class="only-btn"
+														@click.stop.prevent="selectOnlyOwnership('非权益')">只选</span>
+												</label>
+
+												<label><input type="checkbox" value="跨太平洋" v-model="selectedTypes"> 跨太平洋
+													<span class="only-btn"
+														@click.stop.prevent="selectOnlyType('跨太平洋')">只选</span></label>
+												<label><input type="checkbox" value="亚欧互联" v-model="selectedTypes"> 亚欧互联
+													<span class="only-btn"
+														@click.stop.prevent="selectOnlyType('亚欧互联')">只选</span></label>
+												<label><input type="checkbox" value="区域互联" v-model="selectedTypes"> 区域互联
+													<span class="only-btn"
+														@click.stop.prevent="selectOnlyType('区域互联')">只选</span></label>
+												<label><input type="checkbox" value="其他" v-model="selectedTypes"> 其他
+													<span class="only-btn"
+														@click.stop.prevent="selectOnlyType('其他')">只选</span></label>
+											</div>
+											<div class="filters range"
+												style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+												<label style="flex:1 1 48%;">洲别
+													<select v-model="scopeContinent">
+														<option value="all">全部</option>
+														<option value="APAC">亚太</option>
+														<option value="EMEA">欧洲中东非</option>
+														<option value="AMER">美洲</option>
+													</select>
+												</label>
+												<label style="flex:1 1 48%;">距离
+													<select v-model="scopeDistance">
+														<option value="all">不限</option>
+														<option value=">5000">大于 5000km</option>
+														<option value="<5000">小于 5000km</option>
+													</select>
+												</label>
+											</div>
+										</div>
+									</div>
+
+									<div class="title stats-title"><span class="accent"></span>海缆整体情况</div>
+									<div class="console-stats compact" style="margin-top:10px;">
+										<div class="stat stat-hero">
+											<div class="stat-head">
+												<span class="stat-chip pulse">实时</span>
+												<span class="stat-title">海缆</span>
+											</div>
+											<div class="stat-number">{{ stats.totalCables }}</div>
+											<div class="stat-subline">运行中 {{ stats.okCount }} ｜ 故障 <span class="stat-fault">{{ faultCount }}</span></div>
+										</div>
+										<div class="stat">
+											<div class="stat-head">
+												<span class="stat-chip">覆盖</span>
+												<span class="stat-title">登陆站</span>
+											</div>
+											<div class="stat-number">{{ stats.totalLandings }}</div>
+											<div class="stat-subline">权益 {{ stats.ownedLandings }}</div>
+										</div>
+										<div class="stat">
+											<div class="stat-head">
+												<span class="stat-chip ghost">资产</span>
+												<span class="stat-title">权益海缆</span>
+											</div>
+											<div class="stat-number">{{ stats.ownedCables }}</div>
+											<div class="stat-grid">
+												<span>自建 {{ stats.selfCables }}</span>
+												<span>合建 {{ stats.coCables }}</span>
+												<span>租用 {{ stats.rentCables }}</span>
+											</div>
+										</div>
+									</div>
+								</div>
+
+								<div v-show="compactActiveTab==='cable'">
+									<div class="list-block" style="margin-top:6px;">
+										<div class="title-row with-search">
+											<h3 style="margin: 0;">海缆列表</h3>
+											<div class="searchbar">
+												<input type="text" v-model="searchCable" placeholder="搜索海缆名称" />
+												<button v-if="searchCable" class="clear-btn"
+													@click="searchCable=''">×</button>
+											</div>
+										</div>
+										<div class="list">
+											<div v-if="cablePageItems.length === 0" class="empty">暂无数据</div>
+											<div v-else>
+												<div v-for="(line, i) in cablePageItems"
+													:key="(line.feature_id || line.id || line.name) + '-' + i">
+													<div class="item"
+														:class="{ expanded: cableDetail.id === line.id, active: (focusMode==='cable' && focusedCableId===line.id) }"
+														@click="onCableItemClick(line)"
+														@mouseenter="showCableTooltip(line, $event)"
+														@mousemove="moveCableTooltip($event)"
+														@mouseleave="hideCableTooltip">
+														<div class="primary" style="gap:10px;">
+															<span>{{ line.name }}</span>
+															<span class="ownership-tag" :class="line.ownershipClass">{{
+																line.ownership || '非权益' }}</span>
+															<button class="inline-btn"
+																@click.stop="toggleCableDetail(line)">详情</button>
+														</div>
+														<div class="badge"
+															:class="{ ok: line.status==='ok', err: line.status==='err' }">
+															{{
+															line.status==='ok' ? '运行中' : '故障' }}</div>
+													</div>
+													<div v-if="cableDetail.id === line.id" class="cable-detail">
+														<div class="title">{{ line.name || '海缆' }}
+															<div>
+																<button class="inline-btn"
+																	@click.stop="toggleItemLang('cable', line.id)">{{
+																	getItemLang('cable', line.id) === 'zh' ? '中' : 'EN'
+																	}}</button>
+																<button class="inline-btn"
+																	@click.stop="copyText(line.name || '', '名称')">复制</button>
+																<button class="inline-btn"
+																	@click.stop="toggleShowLandingLabels()"
+																	style="display:none;">{{ showLandingLabels ?
+																	'隐藏登陆站名' : '显示登陆站名' }}</button>
+																<button class="inline-btn expand"
+																	@click.stop="openCableModal(line)">展开</button>
+															</div>
+														</div>
+														<div class="rows">
+															<div class="row">
+																<div class="key">{{ tLabel('branch','cable', line.id) }}
+																</div>
+																<div class="val">敬请期待</div>
+															</div>
+															<div class="row">
+																<div class="key">{{ tLabel('name','cable', line.id) }}
+																</div>
+																<div class="val">{{ line.name }} <button
+																		class="inline-btn"
+																		@click.stop="copyText(line.name || '', getItemLang('cable', line.id) === 'zh' ? '名称' : 'Name')">复制</button>
+																</div>
+															</div>
+															<div class="row">
+																<div class="key">{{ tLabel('id','cable', line.id) }}
+																</div>
+																<div class="val">{{ line.id }} <button
+																		class="inline-btn"
+																		@click.stop="copyText(line.id || '', getItemLang('cable', line.id) === 'zh' ? '编号' : 'ID')">复制</button>
+																</div>
+															</div>
+															<div class="row">
+																<div class="key">{{ tLabel('feature_id','cable',
+																	line.id) }}</div>
+																<div class="val">{{ line.feature_id || '-' }} <button
+																		class="inline-btn"
+																		@click.stop="copyText(line.feature_id || '', 'feature_id')">复制</button>
+																</div>
+															</div>
+															<div class="row">
+																<div class="key">{{ tLabel('ownership','cable', line.id)
+																	}}</div>
+																<div class="val">{{ line.ownership || '非权益' }}</div>
+															</div>
+															<div class="row">
+																<div class="key">局向</div>
+																<div class="val">{{ displayDirection(line.direction ||
+																	cableDetail.detail?.direction) }}</div>
+															</div>
+															<div class="row">
+																<div class="key">洲别</div>
+																<div class="val">{{ displayContinents(line.continents ||
+																	cableDetail.detail?.continents || line.continent ||
+																	cableDetail.detail?.continent) ||
+																	displayMacroRegion(line.continent ||
+																	cableDetail.detail?.continent) || '-' }}</div>
+															</div>
+															<div class="row">
+																<div class="key">{{ tLabel('rfs_year','cable', line.id)
+																	}}</div>
+																<div class="val">{{ cableDetail.detail?.rfs_year || '-'
+																	}}</div>
+															</div>
+															<div class="row">
+																<div class="key">{{ tLabel('is_planned','cable',
+																	line.id) }}</div>
+																<div class="val">{{ cableDetail.detail?.is_planned ?
+																	(getItemLang('cable', line.id) === 'zh' ? '是' :
+																	'Yes') : (getItemLang('cable', line.id) === 'zh' ?
+																	'否' : 'No') }}</div>
+															</div>
+															<div class="row" v-if="cableDetail.detail?.length">
+																<div class="key">{{ tLabel('length','cable', line.id) }}
+																</div>
+																<div class="val">{{ cableDetail.detail.length }}</div>
+															</div>
+															<div class="row" v-if="getCableUrl(line)">
+																<div class="key">{{ tLabel('website','cable', line.id)
+																	}}</div>
+																<div class="val"><button class="link-btn"
+																		@click.stop="openUrl(getCableUrl(line))">官网</button>
+																</div>
+															</div>
+															<div class="row"
+																v-if="cableDetail.detail?.owners || cableDetail.detail?.owner">
+																<div class="key">{{ tLabel('owners','cable', line.id) }}
+																</div>
+																<div class="val"><span class="owner-text"
+																		:class="{ expanded: isExpanded(line.id, 'owners') }"
+																		@click.stop="toggleExpand(line.id, 'owners')"><template
+																			v-if="isExpanded(line.id, 'owners')">{{
+																			displayOwnerText(line.id)
+																			}}</template><template v-else>{{
+																			displayOwnerText(line.id) }}<span
+																				v-if="needsOwnerEllipsis(line.id)"
+																				class="owner-ell">…</span></template></span>
+																</div>
+															</div>
+															<div class="row" v-if="cableDetail.detail?.suppliers">
+																<div class="key">{{ tLabel('suppliers','cable', line.id)
+																	}}</div>
+																<div class="val">{{
+																	translateEntities(cableDetail.detail.suppliers,
+																	getItemLang('cable', line.id)) }}</div>
+															</div>
+															<div class="row">
+																<div class="key">{{ tLabel('landings','cable', line.id)
+																	}}</div>
+																<div class="val">
+																	<div class="inline-flex">
+																		<span class="meta-count">{{
+																			landingCount(cableDetail.detail) }} 个</span>
+																		<select
+																			v-if="landingCount(cableDetail.detail) > 0"
+																			v-model="cableDetail.landingLimit"
+																			@click.stop class="mini-select">
+																			<option :value="8">前 8 条</option>
+																			<option :value="15">前 15 条</option>
+																			<option value="all">全部</option>
+																		</select>
+																	</div>
+																	<div v-if="landingCount(cableDetail.detail) > 0"
+																		class="lines indent-lines"
+																		style="margin-top:6px;">
+																		<div class="line"
+																			v-for="(lp,i2) in cableLandingLimited()"
+																			:key="lp.id || i2"
+																			@click.stop="focusLandingByRef(lp)">
+																			<span class="name">{{ normalizeText(lp.name)
+																				}}</span>
+																			<span class="meta" v-if="lp.country">{{
+																				translateCountryToZh(normalizeText(lp.country))
+																				}}</span>
+																		</div>
+																		<div class="more"
+																			v-if="landingCount(cableDetail.detail) > cableLandingVisibleCount()">
+																			等 {{ landingCount(cableDetail.detail) -
+																			cableLandingVisibleCount() }} 条…</div>
+																	</div>
+																	<span v-else>暂无</span>
+																</div>
+															</div>
+														</div>
+
+														<div v-if="cableDetail.loading"
+															style="color:#8aa4c4; margin-top:4px;">详情加载中…</div>
+													</div>
+												</div>
+											</div>
+										</div>
+										<div class="list-footer">
+											<div class="page-size" v-if="cablePaginationAdvanced">
+												每页
+												<select v-model.number="cablePageSize">
+													<option :value="20">20</option>
+													<option :value="50">50</option>
+													<option :value="100">100</option>
+												</select>
+												条｜共 {{ cableTotal }} 条
+											</div>
+											<div class="actions">
+												<button @click="prevCablePage" :disabled="cablePage <= 1">上一页</button>
+												<button @click="nextCablePage"
+													:disabled="cablePage >= cableTotalPages">下一页</button>
+											</div>
+											<div class="page-jump" v-if="cablePaginationAdvanced">
+												跳转
+												<input type="number" v-model.number="cablePageInput"
+													@keyup.enter="goCablePage" min="1" :max="cableTotalPages" />
+												<button @click="goCablePage">Go</button>
+											</div>
+											<label class="quick-toggle">
+												<input type="checkbox" v-model="cablePaginationAdvanced" />
+												高级
+											</label>
+											<div class="page-info">第 {{ cablePage }} / {{ cableTotalPages }} 页</div>
+										</div>
+									</div>
+								</div>
+
+								<div v-show="compactActiveTab==='landing'">
+									<div class="list-block" style="margin-top:6px;">
+										<div class="title-row with-search">
+											<h3 style="margin: 0;">登陆站列表</h3>
+											<div class="searchbar">
+												<input type="text" v-model="searchLanding" placeholder="搜索登陆站坐标或名称" />
+												<button v-if="searchLanding" class="clear-btn"
+													@click="searchLanding=''">×</button>
+											</div>
+											<label class="quick-toggle">
+												<!-- 权益筛选已移除 -->
+											</label>
+										</div>
+										<div class="list">
+											<div v-if="landingPageItems.length === 0" class="empty">暂无数据</div>
+											<div v-else>
+												<div v-for="(lp, i) in landingPageItems" :key="lp.coordStr + i">
+													<div class="item"
+														:class="{ expanded: landingDetail.id === lp.id, active: (focusMode==='landing' && focusedLanding && focusedLanding.id===lp.id) }"
+														@click="onLandingItemClick(lp)"
+														@mouseenter="showLandingTooltip(lp, $event)"
+														@mousemove="moveLandingTooltip($event)"
+														@mouseleave="hideLandingTooltip" :title="'点击聚焦'">
+														<div class="primary">
+															<!-- <span class="expand-ico"></span> -->
+															<span>{{ normalizeText(lp.name || ('登陆站 ' + (i+1)))
+																}}</span>
+															<span class="ownership-tag" :class="lp.ownershipClass">{{
+																lp.ownership || '非权益' }}</span>
+															<button class="inline-btn"
+																@click.stop="toggleLandingDetail(lp)">详情</button>
+														</div>
+														<div class="badge">{{
+															translateCountryToZh(normalizeText(lp.country || '未标注')) }}
+														</div>
+													</div>
+													<div v-if="landingDetail.id === lp.id" class="landing-detail">
+														<div class="title">{{ normalizeText(lp.name || '登陆站') }}
+															<div>
+																<button class="inline-btn"
+																	@click.stop="toggleItemLang('landing', lp.id)">{{
+																	getItemLang('landing', lp.id) === 'zh' ? '中' : 'EN'
+																	}}</button>
+																<button class="inline-btn"
+																	@click.stop="copyText(lp.name || '', '名称')">复制</button>
+																<button class="inline-btn"
+																	@click.stop="toggleShowLandingLabels()"
+																	style="display:none;">{{ showLandingLabels ?
+																	'隐藏登陆站名' : '显示登陆站名' }}</button>
+																<button class="inline-btn expand"
+																	@click.stop="openLandingModal(lp)">展开</button>
+															</div>
+														</div>
+														<div class="rows">
+															<div class="row">
+																<div class="key">{{ tLabel('coords','landing', lp.id) }}
+																</div>
+																<div class="val">
+																	<span v-if="lp.coords && lp.coords.length >= 2">Lon
+																		{{ Number(lp.coords[0]).toFixed(3) }}, Lat {{
+																		Number(lp.coords[1]).toFixed(3) }}</span>
+																	<button class="inline-btn"
+																		@click.stop="copyText(lp.coordStr || '', '坐标')">复制</button>
+																	<span v-else>-</span>
+																</div>
+															</div>
+															<div class="row" v-if="lp.id">
+																<div class="key">{{ tLabel('id','landing', lp.id) }}
+																</div>
+																<div class="val">{{ lp.id }}</div>
+															</div>
+															<div class="row" v-if="lp.is_tbd !== undefined">
+																<div class="key">{{ tLabel('is_tbd','landing', lp.id) }}
+																</div>
+																<div class="val">{{ lp.is_tbd ? (getItemLang('landing',
+																	lp.id) === 'zh' ? '是' : 'Yes') :
+																	(getItemLang('landing', lp.id) === 'zh' ? '否' :
+																	'No') }}</div>
+															</div>
+															<div class="row"
+																v-if="landingDetail.detail?.country || lp.country">
+																<div class="key">{{ tLabel('country','landing', lp.id)
+																	}}</div>
+																<div class="val">{{
+																	translateCountryToZh(normalizeText(landingDetail.detail?.country
+																	|| lp.country)) }}</div>
+															</div>
+															<div class="row">
+																<div class="key">局向</div>
+																<div class="val">{{ displayDirection(lp.direction ||
+																	landingDetail.detail?.direction) }}</div>
+															</div>
+															<div class="row">
+																<div class="key">洲别</div>
+																<div class="val">{{ displayContinents(lp.continent ||
+																	landingDetail.detail?.continent || lp.continentMacro
+																	|| landingDetail.detail?.continentMacro) ||
+																	displayMacroRegion(lp.continent ||
+																	landingDetail.detail?.continent || lp.continentMacro
+																	|| landingDetail.detail?.continentMacro) || '-' }}
+																</div>
+															</div>
+															<div class="row clickable"
+																@click.stop="setLandingCableLimit('all')">
+																<div class="key">{{ tLabel('cables','landing', lp.id) }}
+																</div>
+																<div class="val inline-flex">{{
+																	landingDetail.detail?.cables?.length || 0 }} 条 <span
+																		v-if="landingDetail.loading">（加载中…）</span>
+																	<select v-if="landingDetail.detail?.cables?.length"
+																		v-model="landingDetail.cableLimit" @click.stop
+																		class="mini-select">
+																		<option :value="8">前 8 条</option>
+																		<option :value="15">前 15 条</option>
+																		<option value="all">全部</option>
+																	</select>
+																</div>
+															</div>
+														</div>
+														<div v-if="landingDetail.detail?.cables?.length"
+															class="lines indent-lines">
+															<div class="line" v-for="(cb, idx) in landingCableLimited"
+																:key="cb.id || idx"
+																style="cursor:pointer; align-items:center; gap:8px;"
+																@click.stop="focusCableByRef(cb)">
+																<span class="name">{{ normalizeText(cb.name) }}</span>
+																<span class="meta">商用年 {{ cb.rfs_year || '-' }} <span
+																		class="planned"
+																		v-if="cb.is_planned">规划中</span></span>
+															</div>
+															<div class="more"
+																v-if="landingDetail.detail.cables.length > landingCableVisibleCount">
+																等 {{ landingDetail.detail.cables.length -
+																landingCableVisibleCount }} 条…</div>
+														</div>
+													</div>
+												</div>
+											</div>
+										</div>
+										<div class="list-footer">
+											<div class="page-size" v-if="landingPaginationAdvanced">
+												每页
+												<select v-model.number="landingPageSize">
+													<option :value="20">20</option>
+													<option :value="50">50</option>
+													<option :value="100">100</option>
+												</select>
+												条｜共 {{ landingTotal }} 条
+											</div>
+											<div class="actions">
+												<button @click="prevLandingPage"
+													:disabled="landingPage <= 1">上一页</button>
+												<button @click="nextLandingPage"
+													:disabled="landingPage >= landingTotalPages">下一页</button>
+											</div>
+											<div class="page-jump" v-if="landingPaginationAdvanced">
+												跳转
+												<input type="number" v-model.number="landingPageInput"
+													@keyup.enter="goLandingPage" min="1" :max="landingTotalPages" />
+												<button @click="goLandingPage">Go</button>
+											</div>
+											<label class="quick-toggle">
+												<input type="checkbox" v-model="landingPaginationAdvanced" />
+												高级
+											</label>
+											<div class="page-info">第 {{ landingPage }} / {{ landingTotalPages }} 页</div>
+										</div>
+									</div>
+								</div>
+
+								<div v-show="compactActiveTab==='fault'">
+									<div class="list-block" style="margin-top:6px;">
+										<div class="title-row compact-fault-header">
+											<div class="row-top">
+												<h3 style="margin:0;">故障列表</h3>
+												<div class="fault-stats">
+													<span v-if="faultStats.major" class="badge major">重大 {{ faultStats.major }}</span>
+													<span v-if="faultStats.important" class="badge important">重要 {{ faultStats.important }}</span>
+													<span>共 {{ faultStats.total }} 条</span>
+												</div>
+											</div>
+											<div class="row-bottom">
+												<div class="searchbar">
+													<input type="text" v-model="searchFault" placeholder="搜索故障海缆" />
+													<button v-if="searchFault" class="clear-btn" @click="searchFault=''">×</button>
+												</div>
+												<label class="quick-toggle">
+													<input type="checkbox" v-model="showFaultCablesOnMap" @change="updateChart" />
+													地图显示所有故障海缆
+												</label>
+												<button class="inline-btn" @click="toggleRealtime" style="margin-left:8px;">
+													{{ realtimeEnabled ? '关闭实况' : '开启实况' }}
+												</button>
+												<div class="realtime-box" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; max-width: 420px; overflow:hidden;">
+													<span class="countdown" style="color:#8aa4c4; font-size:12px;">下次刷新倒计时：{{ Math.floor((realtimeCountdown||0)/60) }}:{{ ((realtimeCountdown||0)%60).toString().padStart(2,'0') }}</span>
+													<div class="marquee" style="flex:1 1 auto; min-width:160px; max-width:420px; overflow:hidden; white-space:nowrap;">
+														<div class="marquee-inner">{{ realtimeMessage }}</div>
+													</div>
+												</div>
+											</div>
+										</div>
+										<div class="list" ref="faultList">
+											<div v-if="faultsLoading" class="empty loading">
+												<span class="spinner" aria-hidden="true"></span>
+												<span class="text">故障加载中…</span>
+											</div>
+											<div v-else-if="displayFaults.length === 0" class="empty">暂无故障</div>
+											<div v-else>
+												<div class="item" v-for="(f, i) in displayFaults" :key="f.name + i"
+													:class="{ active: i === selectedFaultIndex }"
+													:ref="'faultItem-' + i" @mouseenter="showFaultTooltip(f, $event)"
+													@mousemove="moveFaultTooltip($event)" @mouseleave="hideFaultTooltip($event)"
+													@click="selectFault(f, i)"
+													style="grid-template-columns: 1fr; align-items: flex-start; cursor: pointer; gap:6px;">
+													<div class="primary"
+														style="justify-content: space-between; width: 100%;">
+														<div
+															style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+															<span style="font-weight:700;">{{ faultTitle(f) }}</span>
+															<span class="badge" :class="faultSeverityClass(f)">{{
+																faultSeverityLabel(f) }}</span>
+														</div>
+														<div style="display:flex; gap:6px; align-items:center;">
+															<span class="badge err">故障</span>
+															<button class="inline-btn" style="margin-left:8px;"
+																@click.stop="toggleFaultDetail(i)">{{
+																selectedFaultIndex===i ? '收起详情' : '详情' }}</button>
+														</div>
+													</div>
+													<div class="fault-meta-row">
+														<span>开始：{{ safeVal(f.start) }}</span>
+														<span>结束：{{ safeVal(f.end) }}</span>
+														<span class="pill workorder" v-if="f.workOrder">工单 {{
+															safeVal(f.workOrder) }}</span>
+														<span class="pill duration">历时 {{ liveDuration(f) }}</span>
+													</div>
+													<div v-if="isCompactMode && faultPanelExpanded && selectedFaultIndex===i && !faultOverlayMode" class="fault-detail inline">
+														<div class="title">
+															<span>{{ faultTitle(f) }}</span>
+															<div class="chips">
+																<span class="badge err">故障</span>
+																<span v-if="faultSeverityLabel(f)" class="badge" :class="faultSeverityClass(f)">{{ faultSeverityLabel(f) }}</span>
+																<span class="pill duration">历时 {{ liveDuration(f) }}</span>
+															</div>
+														</div>
+														<div class="fault-meta-grid loc-grid">
+															<div class="fault-meta-card loc-1">
+																<div class="label">故障定位1 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(1)">{{ faultEditState.active && faultEditState.index===1 ? '编辑中' : '编辑' }}</button></div>
+																<div class="value fault-loc-card">
+																	<div class="fault-loc-main">
+																		<span class="fault-loc-landing">{{ safeVal(f.involvedLanding1) || '未填站点' }}</span>
+																		<span class="fault-loc-distance">{{ safeVal(f.distance1) || '--' }} km</span>
+																	</div>
+																	<div class="fault-loc-sub">海缆：{{ safeVal(f.involvedCable1) || '未填写' }}</div>
+																</div>
+															</div>
+															<div class="fault-meta-card loc-2">
+																<div class="label">故障定位2 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(2)">{{ faultEditState.active && faultEditState.index===2 ? '编辑中' : '编辑' }}</button></div>
+																<div class="value fault-loc-card">
+																	<div class="fault-loc-main">
+																		<span class="fault-loc-landing">{{ safeVal(f.involvedLanding2) || '未填站点' }}</span>
+																		<span class="fault-loc-distance">{{ safeVal(f.distance2) || '--' }} km</span>
+																	</div>
+																	<div class="fault-loc-sub">海缆：{{ safeVal(f.involvedCable2) || '未填写' }}</div>
+																</div>
+															</div>
+															<div class="fault-meta-card highlight loc-3">
+																<div class="label">故障定位3 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(3)">{{ faultEditState.active && faultEditState.index===3 ? '编辑中' : '编辑' }}</button></div>
+																<div class="value fault-loc-card">
+																	<div class="fault-loc-main">
+																		<span class="fault-loc-landing">{{ safeVal(f.involvedLanding3) || '未填站点' }}</span>
+																		<span class="fault-loc-distance">{{ safeVal(f.distance3) || '--' }} km</span>
+																	</div>
+																	<div class="fault-loc-sub">海缆：{{ safeVal(f.involvedCable3) || '未填写' }}</div>
+																</div>
+															</div>
+														</div>
+														<div class="fault-edit-overlay" v-if="faultEditState.active">
+															<div class="fault-edit-overlay-inner">
+																<div class="overlay-header">
+																	<span>编辑故障定位 {{ faultEditState.index }}</span>
+																	<button class="inline-btn" @click.stop="cancelFaultEdit">关闭</button>
+																</div>
+																<div class="fault-edit-group compact">
+																	<el-select class="fault-edit-select" v-model="faultEditState.cable" filterable clearable placeholder="选择或搜索故障定位海缆" :popper-append-to-body="true" popper-class="fault-edit-select-dropdown" @change="onEditCableChange">
+																		<el-option v-for="nm in cableNameOptions" :key="nm" :label="nm" :value="nm"></el-option>
+																	</el-select>
+																	<el-select class="fault-edit-select" v-model="faultEditState.landing" filterable clearable placeholder="选择或搜索登陆站（需先选海缆）" :popper-append-to-body="true" popper-class="fault-edit-select-dropdown">
+																		<el-option v-for="nm in landingOptionsForEdit" :key="nm" :label="nm" :value="nm"></el-option>
+																	</el-select>
+																	<input class="fault-edit-input readonly" type="text" v-model="faultEditState.distance" placeholder="距离 (km)" readonly>
+																	<input class="fault-edit-input readonly" type="text" v-model="faultEditState.pointCoord" placeholder="故障点经纬度 (Lon,Lat)" readonly>
+																	<div class="fault-edit-actions">
+																		<button class="inline-btn" @click.stop="startFaultPointPick()">打点</button>
+																		<button class="inline-btn" :disabled="faultEditState.saving" @click.stop="saveFaultEdit()">保存</button>
+																		<button class="inline-btn" @click.stop="cancelFaultEdit">取消</button>
+																	</div>
+																	<span class="meta err" v-if="faultEditState.error" style="color:#ff9f7f;">{{ faultEditState.error }}</span>
+																</div>
+															</div>
+														</div>
+														<div class="rows">
+															<div class="row"><div class="key">涉及海缆</div><div class="val">{{ safeVal(f.cableName || f.name) }}</div></div>
+															<div class="row"><div class="key">故障描述</div><div class="val">{{ safeVal(f.desc) }}</div></div>
+															<div class="row"><div class="key">故障原因</div><div class="val">{{ safeVal(f.cause) }}</div></div>
+															<div class="row"><div class="key">处理进展</div><div class="val">{{ safeVal(f.progress) }}</div></div>
+															<div class="row"><div class="key">最近一次修改者</div><div class="val">{{ safeVal(f.lastModifier || (f.raw && f.raw['大屏最近一次操作用户'])) }}</div></div>
+															<div class="row"><div class="key">业务影响</div><div class="val">{{ safeVal(f.impact) }}</div></div>
+														</div>
+														<div style="display:flex; justify-content:flex-end; gap:10px; margin-top:8px;">
+															<button class="inline-btn" @click.stop="expandFaultOverlay()">展开到大窗</button>
+															<button class="inline-btn" @click.stop="toggleFaultDetail(i)">收起</button>
+														</div>
+													</div>
+												</div>
+											</div>
+										</div>
+										<div v-if="isCompactMode && faultPanelExpanded && faultOverlayMode && selectedFault" class="compact-fault-overlay" @click.self="closeFaultOverlay()">
+											<div class="fault-detail">
+												<button class="close overlay-close" @click.stop="closeFaultOverlay()">×</button>
+												<div class="title">
+													<span>{{ faultTitle(selectedFault) }}</span>
+													<div class="chips">
+														<span class="badge err">故障</span>
+														<span v-if="faultSeverityLabel(selectedFault)" class="badge" :class="faultSeverityClass(selectedFault)">{{ faultSeverityLabel(selectedFault) }}</span>
+														<span class="pill duration">历时 {{ liveDuration(selectedFault) }}</span>
+													</div>
+												</div>
+												<div class="fault-meta-grid loc-grid">
+													<div class="fault-meta-card loc-1">
+														<div class="label">故障定位1 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(1)">{{ faultEditState.active && faultEditState.index===1 ? '编辑中' : '编辑' }}</button></div>
+														<div class="value fault-loc-card">
+															<div class="fault-loc-main">
+																<span class="fault-loc-landing">{{ safeVal(selectedFault.involvedLanding1) || '未填站点' }}</span>
+																<span class="fault-loc-distance">{{ safeVal(selectedFault.distance1) || '--' }} km</span>
+															</div>
+															<div class="fault-loc-sub">海缆：{{ safeVal(selectedFault.involvedCable1) || '未填写' }}</div>
+														</div>
+													</div>
+													<div class="fault-meta-card loc-2">
+														<div class="label">故障定位2 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(2)">{{ faultEditState.active && faultEditState.index===2 ? '编辑中' : '编辑' }}</button></div>
+														<div class="value fault-loc-card">
+															<div class="fault-loc-main">
+																<span class="fault-loc-landing">{{ safeVal(selectedFault.involvedLanding2) || '未填站点' }}</span>
+																<span class="fault-loc-distance">{{ safeVal(selectedFault.distance2) || '--' }} km</span>
+															</div>
+															<div class="fault-loc-sub">海缆：{{ safeVal(selectedFault.involvedCable2) || '未填写' }}</div>
+														</div>
+													</div>
+													<div class="fault-meta-card highlight loc-3">
+														<div class="label">故障定位3 <button class="fault-loc-label-btn" title="编辑" @click.stop="startFaultEdit(3)">{{ faultEditState.active && faultEditState.index===3 ? '编辑中' : '编辑' }}</button></div>
+														<div class="value fault-loc-card">
+															<div class="fault-loc-main">
+																<span class="fault-loc-landing">{{ safeVal(selectedFault.involvedLanding3) || '未填站点' }}</span>
+																<span class="fault-loc-distance">{{ safeVal(selectedFault.distance3) || '--' }} km</span>
+															</div>
+															<div class="fault-loc-sub">海缆：{{ safeVal(selectedFault.involvedCable3) || '未填写' }}</div>
+														</div>
+													</div>
+												</div>
+												<div class="fault-edit-overlay" v-if="faultEditState.active">
+													<div class="fault-edit-overlay-inner">
+														<div class="overlay-header">
+															<span>编辑故障定位 {{ faultEditState.index }}</span>
+															<button class="inline-btn" @click.stop="cancelFaultEdit">关闭</button>
+														</div>
+														<div class="fault-edit-group compact">
+															<el-select class="fault-edit-select" v-model="faultEditState.cable" filterable clearable placeholder="选择或搜索故障定位海缆" :popper-append-to-body="true" popper-class="fault-edit-select-dropdown" @change="onEditCableChange">
+																<el-option v-for="nm in cableNameOptions" :key="nm" :label="nm" :value="nm"></el-option>
+															</el-select>
+															<el-select class="fault-edit-select" v-model="faultEditState.landing" filterable clearable placeholder="选择或搜索登陆站（需先选海缆）" :popper-append-to-body="true" popper-class="fault-edit-select-dropdown">
+																<el-option v-for="nm in landingOptionsForEdit" :key="nm" :label="nm" :value="nm"></el-option>
+															</el-select>
+															<input class="fault-edit-input readonly" type="text" v-model="faultEditState.distance" placeholder="距离 (km)" readonly>
+															<input class="fault-edit-input readonly" type="text" v-model="faultEditState.pointCoord" placeholder="故障点经纬度 (Lon,Lat)" readonly>
+															<div class="fault-edit-actions">
+																<button class="inline-btn" @click.stop="startFaultPointPick()">打点</button>
+																<button class="inline-btn" :disabled="faultEditState.saving" @click.stop="saveFaultEdit()">保存</button>
+																<button class="inline-btn" @click.stop="cancelFaultEdit">取消</button>
+															</div>
+															<span class="meta err" v-if="faultEditState.error" style="color:#ff9f7f;">{{ faultEditState.error }}</span>
+														</div>
+													</div>
+												</div>
+												<div class="rows">
+													<div class="row">
+														<div class="key">涉及海缆</div>
+														<div class="val">{{ safeVal(selectedFault.cableName || selectedFault.name) }} <button class="inline-btn" @click.stop="copyText(selectedFault.cableName || selectedFault.name || '', '涉及海缆')">复制</button>
+														</div>
+													</div>
+													<div class="row">
+														<div class="key">故障描述</div>
+														<div class="val">{{ safeVal(selectedFault.desc) }} <button class="inline-btn" @click.stop="copyText(selectedFault.desc || '', '故障描述')">复制</button>
+														</div>
+													</div>
+													<div class="row">
+														<div class="key">是否重大</div>
+														<div class="val">{{ safeVal(selectedFault.isMajor) }}</div>
+													</div>
+													<div class="row">
+														<div class="key">故障原因</div>
+														<div class="val">{{ safeVal(selectedFault.cause) }} <button class="inline-btn" @click.stop="copyText(selectedFault.cause || '', '故障原因')">复制</button></div>
+													</div>
+													<div class="row">
+														<div class="key">处理进展</div>
+														<div class="val">{{ safeVal(selectedFault.progress) }} <button class="inline-btn" @click.stop="copyText(selectedFault.progress || '', '处理进展')">复制</button></div>
+													</div>
+													<div class="row">
+														<div class="key">最近一次修改者</div>
+														<div class="val">{{ safeVal(selectedFault.lastModifier || (selectedFault.raw && selectedFault.raw['大屏最近一次操作用户'])) }} <button class="inline-btn" @click.stop="copyText(selectedFault.lastModifier || (selectedFault.raw && selectedFault.raw['大屏最近一次操作用户']) || '', '最近一次修改者')">复制</button></div>
+													</div>
+													<div class="row">
+														<div class="key">业务影响</div>
+														<div class="val">{{ safeVal(selectedFault.impact) }} <button class="inline-btn" @click.stop="copyText(selectedFault.impact || '', '业务影响')">复制</button></div>
+													</div>
+													<div class="row">
+														<div class="key">备注</div>
+														<div class="val">{{ safeVal(selectedFault.remark) }} <button class="inline-btn" @click.stop="copyText(selectedFault.remark || '', '备注')">复制</button></div>
+													</div>
+													<div class="row" v-if="selectedFault.registrar">
+														<div class="key">登记人</div>
+														<div class="val">{{ safeVal(selectedFault.registrar) }} <button class="inline-btn" @click.stop="copyText(selectedFault.registrar || '', '登记人')">复制</button></div>
+													</div>
+													<div class="row" v-if="selectedFault.sameRoute">
+														<div class="key">同路由海缆段</div>
+														<div class="val">{{ safeVal(selectedFault.sameRoute) }} <button class="inline-btn" @click.stop="copyText(selectedFault.sameRoute || '', '同路由海缆段')">复制</button></div>
+													</div>
+												</div>
+											</div>
+										</div>
+									</div>
+								</div>
+							</div>
+						</div>
+				</div>
+			</div>
+			<!-- 居中详情弹窗 -->
+			<div v-if="modal.show" class="modal-overlay" @click.self="closeModal">
+				<div class="modal-box">
+					<div class="modal-header">
+						<div class="title">
+							<template v-if="modal.type === 'cable'">
+								<span>{{ (cableDetail.line && cableDetail.line.name) || modal.line?.name || '海缆详情'
+									}}</span>
+								<span class="pill" v-if="(cableDetail.line?.ownership || modal.line?.ownership)">{{
+									cableDetail.line?.ownership || modal.line?.ownership }}</span>
+								<div>
+									<button class="inline-btn"
+										@click.stop="toggleItemLang('cable', (cableDetail.line?.id || modal.line?.id))">{{
+										getItemLang('cable', (cableDetail.line?.id || modal.line?.id)) === 'zh' ? '中' :
+										'EN' }}</button>
+								</div>
+							</template>
+							<template v-else>
+								<span>{{ (landingDetail.lp && landingDetail.lp.name) || modal.lp?.name || '登陆站详情'
+									}}</span>
+								<span class="pill" v-if="(landingDetail.lp?.country || modal.lp?.country)">{{
+									translateCountryToZh(normalizeText(landingDetail.lp?.country || modal.lp?.country))
+									}}</span>
+								<div>
+									<button class="inline-btn"
+										@click.stop="toggleItemLang('landing', (landingDetail.lp?.id || modal.lp?.id))">{{
+										getItemLang('landing', (landingDetail.lp?.id || modal.lp?.id)) === 'zh' ? '中' :
+										'EN' }}</button>
+								</div>
+							</template>
+						</div>
+						<button class="close" @click="closeModal">×</button>
+					</div>
+					<div class="modal-body">
+						<div v-if="modal.type === 'cable'" class="modal-rows">
+							<div class="row">
+								<div class="key">编号</div>
+								<div class="val">{{ cableDetail.line?.id || modal.line?.id || '-' }}</div>
+							</div>
+							<div class="row">
+								<div class="key">权益类型</div>
+								<div class="val">{{ cableDetail.line?.ownership || modal.line?.ownership || '非权益' }}
+								</div>
+							</div>
+							<div class="row">
+								<div class="key">局向</div>
+								<div class="val">{{ displayDirection(cableDetail.line?.direction ||
+									modal.line?.direction || cableDetail.detail?.direction) }}</div>
+							</div>
+							<div class="row">
+								<div class="key">洲别</div>
+								<div class="val">{{ displayContinents(cableDetail.line?.continents ||
+									modal.line?.continents || cableDetail.detail?.continents ||
+									cableDetail.line?.continent || modal.line?.continent ||
+									cableDetail.detail?.continent) || displayMacroRegion(cableDetail.line?.continent ||
+									modal.line?.continent || cableDetail.detail?.continent) || '-' }}</div>
+							</div>
+							<div class="row">
+								<div class="key">商用年</div>
+								<div class="val">{{ cableDetail.detail?.rfs_year || '-' }}</div>
+							</div>
+							<div class="row" v-if="cableDetail.detail?.length">
+								<div class="key">长度</div>
+								<div class="val">{{ cableDetail.detail.length }}</div>
+							</div>
+							<div class="row" v-if="cableDetail.detail?.owners || cableDetail.detail?.owner">
+								<div class="key">运营商</div>
+								<div class="val">{{ translateEntities(cableDetail.detail.owners ||
+									cableDetail.detail.owner, getItemLang('cable', (cableDetail.line?.id ||
+									modal.line?.id))) }}</div>
+							</div>
+							<div class="row" v-if="cableDetail.detail?.suppliers">
+								<div class="key">供应商</div>
+								<div class="val">{{ translateEntities(cableDetail.detail.suppliers, getItemLang('cable',
+									(cableDetail.line?.id || modal.line?.id))) }}</div>
+							</div>
+							<div class="row" v-if="getCableUrl(cableDetail.line || modal.line)">
+								<div class="key">官网</div>
+								<div class="val"><button class="link-btn"
+										@click.stop="openUrl(getCableUrl(cableDetail.line || modal.line))">官网</button>
+								</div>
+							</div>
+							<div class="row">
+								<div class="key">登陆点</div>
+								<div class="val">{{ landingCount(cableDetail.detail) }} 个</div>
+							</div>
+							<div v-if="landingCount(cableDetail.detail) > 0" class="modal-lines">
+								<div class="line" v-for="(lp,i2) in normalizeLandingPoints(cableDetail.detail)"
+									:key="lp.id || i2" @click.stop="focusLandingByRef(lp)">
+									<span class="name">{{ lp.name }}</span>
+									<span class="meta">{{ translateCountryToZh(normalizeText(lp.country || '-'))
+										}}</span>
+								</div>
+							</div>
+							<div v-else style="color:#8aa4c4;">暂无登陆点信息</div>
+						</div>
+
+						<div v-else class="modal-rows">
+							<div class="row">
+								<div class="key">编号</div>
+								<div class="val">{{ landingDetail.lp?.id || modal.lp?.id || '-' }}</div>
+							</div>
+							<div class="row">
+								<div class="key">权益类型</div>
+								<div class="val">{{ landingDetail.lp?.ownership || modal.lp?.ownership || '非权益' }}</div>
+							</div>
+							<div class="row">
+								<div class="key">是否待定</div>
+								<div class="val">{{ (landingDetail.lp?.is_tbd ? '是' : landingDetail.lp?.is_tbd === false
+									? '否' : (modal.lp?.is_tbd ? '是' : modal.lp?.is_tbd === false ? '否' : '-')) }}</div>
+							</div>
+							<div class="row">
+								<div class="key">经纬度</div>
+								<div class="val">
+									<template
+										v-if="(landingDetail.lp?.coords && landingDetail.lp.coords.length>=2) || (modal.lp?.coords && modal.lp.coords.length>=2)">
+										Lon {{ Number((landingDetail.lp?.coords||modal.lp?.coords)[0]).toFixed(3) }},
+										Lat {{ Number((landingDetail.lp?.coords||modal.lp?.coords)[1]).toFixed(3) }}
+									</template>
+									<template v-else>-</template>
+								</div>
+							</div>
+							<div class="row">
+								<div class="key">局向</div>
+								<div class="val">{{ displayDirection(landingDetail.lp?.direction || modal.lp?.direction
+									|| landingDetail.detail?.direction) }}</div>
+							</div>
+							<div class="row">
+								<div class="key">洲别</div>
+								<div class="val">{{ displayContinents(landingDetail.lp?.continent || modal.lp?.continent
+									|| landingDetail.detail?.continent || landingDetail.lp?.continentMacro ||
+									modal.lp?.continentMacro || landingDetail.detail?.continentMacro) ||
+									displayMacroRegion(landingDetail.lp?.continent || modal.lp?.continent ||
+									landingDetail.detail?.continent || landingDetail.lp?.continentMacro ||
+									modal.lp?.continentMacro || landingDetail.detail?.continentMacro) || '-' }}</div>
+							</div>
+							<div class="row">
+								<div class="key">关联海缆</div>
+								<div class="val">{{ landingDetail.detail?.cables?.length || 0 }} 条<span
+										v-if="landingDetail.loading">（加载中…）</span></div>
+							</div>
+							<div v-if="landingDetail.detail?.cables?.length" class="modal-lines">
+								<div class="line" v-for="(cb, idx) in landingDetail.detail.cables" :key="cb.id || idx"
+									@click.stop="focusCableByRef(cb)" style="cursor:pointer;">
+									<span class="name">{{ cb.name }}</span>
+									<span class="meta">商用年 {{ cb.rfs_year || '-' }} <span class="planned"
+											v-if="cb.is_planned">规划中</span></span>
+								</div>
+							</div>
+							<div v-else style="color:#8aa4c4;">暂无关联海缆</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+</body>
+
+</html>
+<!-- 所有业务逻辑都在 app.js -->
+<script src="js/app.js"></script>
