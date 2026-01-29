@@ -165,6 +165,74 @@ textarea {
     --sb-thumb-active: rgba(255, 214, 102, 0.95);
 }
 
+/* 控制台 2K 平面模式优化：降低字号、收紧留白，强化层级对比 */
+.console-slim .panel-header {
+    padding: 12px 14px;
+    font-size: 18px;
+    line-height: 1.3;
+}
+
+.console-slim .panel-body {
+    padding: 12px 14px;
+    gap: 12px;
+}
+
+.console-slim .overview .metrics {
+    gap: 10px;
+}
+
+.console-slim .overview .metric {
+    padding: 8px 10px;
+}
+
+.console-slim .overview .metric .label {
+    font-size: 14px;
+}
+
+.console-slim .overview .metric .value {
+    font-size: 18px;
+}
+
+.console-slim .controls h3 {
+    font-size: 16px;
+}
+
+.console-slim .filters label {
+    font-size: 14px;
+    padding: 6px 8px;
+}
+
+.console-slim .filters.range select {
+    min-width: 120px;
+}
+
+.console-slim .console-stats {
+    padding: 12px 14px;
+    gap: 12px;
+    max-height: clamp(220px, 38vh, 400px);
+}
+
+.console-slim .console-stats .stat {
+    padding: 12px 12px;
+    min-height: 96px;
+}
+
+.console-slim .console-stats .stat-title {
+    font-size: 14px;
+}
+
+.console-slim .console-stats .stat-number {
+    font-size: 20px;
+}
+
+.console-slim .console-stats .stat-subline {
+    font-size: 13px;
+}
+
+.console-slim .title.stats-title {
+    font-size: 16px;
+}
+
 /* 三栏布局：左1/6 中1/2 右缩小约1/3（≈1.33fr），间隔10px；紧凑模式退化为单列地图+悬浮侧栏 */
 .screen {
     display: grid;
@@ -361,7 +429,8 @@ textarea {
     height: calc(100vh - 32px);
     z-index: 50;
     transition: transform 0.25s ease, opacity 0.2s ease;
-    overflow: hidden;
+    /* 允许收起按钮超出容器显示，避免被裁剪 */
+    overflow: visible;
 }
 
 .compact-panel.collapsed {
@@ -371,24 +440,38 @@ textarea {
 
 .compact-drawer-handle {
     position: absolute;
-    top: 18px;
-    right: -18px;
-    width: 18px;
-    height: 48px;
-    background: rgba(22, 93, 255, 0.35);
-    border: 1px solid rgba(72, 219, 251, 0.55);
-    border-radius: 0 10px 10px 0;
+    top: 16px;
+    right: -20px;
+    width: 36px;
+    height: 44px;
+    background: linear-gradient(160deg, rgba(24, 96, 255, 0.45), rgba(14, 28, 58, 0.88));
+    border: 1px solid rgba(90, 190, 255, 0.7);
+    border-radius: 12px;
     color: #e8f7ff;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.35), inset 0 0 12px rgba(72, 219, 251, 0.16);
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.compact-drawer-handle i {
+    font-size: 18px;
+}
+
+.compact-drawer-handle:hover {
+    transform: translateX(2px);
+    border-color: rgba(122, 225, 255, 0.95);
+    box-shadow: 0 12px 26px rgba(0, 0, 0, 0.42), inset 0 0 16px rgba(122, 225, 255, 0.22);
+}
+
+.compact-panel.collapsed .compact-drawer-handle {
+    right: -18px;
 }
 
 .compact-tabs {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    display: flex;
     gap: 6px;
     margin-bottom: 10px;
     padding: 8px;
@@ -397,7 +480,11 @@ textarea {
     border-radius: 12px;
     box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32), inset 0 0 12px rgba(120, 194, 255, 0.14);
     position: relative;
-    overflow: hidden;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 10px;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
 }
 
 .compact-tabs::after {
@@ -426,7 +513,10 @@ textarea {
     align-items: center;
     display: flex;
     justify-content: center;
-    width: 100%;
+    width: auto;
+    min-width: max-content;
+    flex: 0 0 auto;
+    scroll-snap-align: start;
 }
 
 .compact-tabs .tab-btn:hover {
@@ -1981,6 +2071,12 @@ select:focus {
     background: rgba(22, 93, 255, 0.28);
 }
 
+.inline-btn.active {
+    background: rgba(72, 219, 251, 0.35);
+    color: #e8f7ff;
+    border-color: rgba(72, 219, 251, 0.6);
+}
+
 .mini-select {
     min-width: 0;
     width: auto;
@@ -2471,6 +2567,11 @@ select:focus {
     gap: 8px;
 }
 
+.map-actions.dial .dial-panel.single-column .dial-grid,
+.map-actions.dial .dial-panel.single-column .dial-grid.live-grid {
+    grid-template-columns: 1fr;
+}
+
 @media (max-width: 1400px) {
     .map-actions.dial .dial-grid { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
 }
@@ -2520,6 +2621,50 @@ select:focus {
     box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35), 0 0 12px rgba(255, 77, 79, 0.32);
 }
 
+/* 缩放弹出条：透明芯 + 玻璃轨道 */
+.zoom-popover input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 12px;
+    background: transparent;
+}
+
+.zoom-popover input[type="range"]::-webkit-slider-runnable-track {
+    height: 12px;
+    border-radius: 10px;
+    background: linear-gradient(90deg, rgba(154, 229, 255, 0.4), rgba(96, 191, 255, 0.45));
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25), 0 0 12px rgba(72, 219, 251, 0.35);
+}
+
+.zoom-popover input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    margin-top: -3px;
+    border-radius: 50%;
+    background: rgba(154, 229, 255, 0.95);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35), 0 0 10px rgba(154, 229, 255, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.65);
+}
+
+.zoom-popover input[type="range"]::-moz-range-track {
+    height: 12px;
+    border-radius: 10px;
+    background: linear-gradient(90deg, rgba(154, 229, 255, 0.4), rgba(96, 191, 255, 0.45));
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25), 0 0 12px rgba(72, 219, 251, 0.35);
+}
+
+.zoom-popover input[type="range"]::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: rgba(154, 229, 255, 0.95);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35), 0 0 10px rgba(154, 229, 255, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.65);
+}
+
 .fault-pick-hover {
     position: absolute;
     z-index: 18;
@@ -2564,7 +2709,6 @@ select:focus {
     bottom: 18px;
     z-index: 18;
     min-width: 260px;
-    max-width: 320px;
     padding: 12px 14px;
     border-radius: 12px;
     background: rgba(10, 18, 36, 0.88);
@@ -2572,18 +2716,22 @@ select:focus {
     color: #e8f4ff;
     box-shadow: 0 16px 34px rgba(0, 0, 0, 0.35);
     backdrop-filter: blur(6px);
+    /* 原生拖拉宽高，与标题拖拽位移配合；溢出时可滚动 */
+    resize: both;
+    overflow: auto;
 }
 
 .fault-pick-floating .title {
     font-weight: 800;
     margin-bottom: 8px;
     color: #7ae1ff;
+    cursor: move;
 }
 
 .fault-pick-floating .line {
     font-size: 12px;
     margin-top: 2px;
-    color: #c8dfff;
+    color: inherit;
 }
 
 .fault-pick-floating .actions {
@@ -2591,6 +2739,103 @@ select:focus {
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
+}
+
+.fault-pick-remark-row textarea { width: 100%; }
+
+.fault-pick-palette-floating {
+    position: absolute;
+    right: 16px;
+    bottom: 210px;
+    z-index: 19;
+    min-width: 300px;
+    max-width: 380px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    backdrop-filter: blur(6px);
+}
+
+.fault-pick-palette-floating .palette-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-weight: 800;
+}
+
+.fault-pick-palette-floating .palette-title {
+    font-size: 14px;
+}
+
+.fault-pick-palette-floating .close-btn {
+    background: rgba(255, 255, 255, 0.12);
+    border: 0;
+    color: inherit;
+    width: 24px;
+    height: 24px;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.fault-pick-palette-floating .palette-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+}
+
+.fault-pick-palette-floating .palette-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+}
+
+.fault-pick-palette-floating .palette-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.fault-pick-palette-floating .palette-actions {
+    margin-top: 10px;
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+.palette-color {
+    width: 40px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: transparent;
+    border-radius: 6px;
+}
+
+.palette-range {
+    width: 120px;
+}
+
+/* 距离/经纬度信息盒：布局由 CSS 控制，颜色与边框由内联样式随调色盘同步 */
+.fault-pick-info-box {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
+}
+.fault-pick-info-box .label {
+    font-weight: 700;
+    opacity: 0.95;
+}
+.fault-pick-info-box .value {
+    word-break: break-all;
+    text-align: right;
+    font-weight: 800;
 }
 
 .panel.center.fullscreen {
@@ -2729,6 +2974,17 @@ select:focus {
 .faults-left .item .primary {
     flex-wrap: wrap;
     gap: 8px;
+}
+
+/* 故障列表描述行：限制 4 行展示并省略超出部分 */
+.fault-desc.clamp4 {
+    font-weight: 700;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    word-break: break-word;
 }
 
 .faults-left .fault-meta-row {
@@ -2935,6 +3191,17 @@ select:focus {
     letter-spacing: 0.2px;
 }
 
+.fault-loc-remark {
+    color: #c2d8ff;
+    font-size: 13px;
+    line-height: 1.45;
+    padding: 8px 10px;
+    background: rgba(72, 219, 251, 0.06);
+    border: 1px dashed rgba(72, 219, 251, 0.25);
+    border-radius: 10px;
+    white-space: pre-wrap;
+}
+
 .fault-loc-edit-btn {
     position: absolute;
     top: 0;
@@ -3019,6 +3286,9 @@ select:focus {
     border-radius: 14px;
     padding: 14px;
     backdrop-filter: blur(8px);
+    /* 支持拖拽调整宽高（由浏览器原生实现），与 header 拖拽位移配合 */
+    resize: both;
+    overflow: auto;
 }
 
 .fault-edit-overlay .overlay-header {
@@ -3029,6 +3299,8 @@ select:focus {
     color: #ffd666;
     font-weight: 800;
     letter-spacing: 0.4px;
+    /* 作为拖拽把手的视觉暗示 */
+    cursor: move;
 }
 
 .fault-meta-row {
@@ -3121,6 +3393,15 @@ select:focus {
     min-width: 160px;
     box-shadow: inset 0 0 0 1px rgba(72, 219, 251, 0.16), 0 0 12px rgba(72, 219, 251, 0.08);
     transition: all 0.2s ease;
+}
+
+.fault-remark-input {
+    width: 100%;
+    min-height: 64px;
+    resize: both;
+    line-height: 1.4;
+    font-size: 14px;
+    white-space: pre-wrap;
 }
 
 .fault-edit-input:focus {

@@ -13,6 +13,8 @@ new Vue({
 				return obj;
 			})(),
 			myChart: null,
+			// 瓦片地图实例（2D tiles 模式专用）：切换到 tiles 时创建，切回普通 2D / 3D 时销毁
+			tileViewer: null,
 			chartEventTarget: null,
 			userInfo: null,
 			authBlocked: false,
@@ -21,8 +23,11 @@ new Vue({
 			focusMode: 'none',
 			focusedLanding: null,
 			faultApiModes: [
-				{ key: 'local-docker', name: '本地docker模式', host: '127.0.0.1:801', autoDetect: true },
-				{ key: 'local-xampp', name: '本地模式', host: '127.0.0.1', autoDetect: false }
+				{ key: 'oa', name: 'OA模式', host: '192.168.20.184', autoDetect: true },
+				{ key: 'prod', name: '生产网本地84模式', host: '127.0.0.1:808', autoDetect: true },
+				{ key: 'prod', name: '生产网83模式', host: '172.16.45.83', autoDetect: false },
+				{ key: 'local-docker', name: '本地docker模式', host: '127.0.0.1:808', autoDetect: false },
+				{ key: 'local-xampp', name: '本地xampp模式', host: '127.0.0.1', autoDetect: false }
 			],
 			faultApiMode: 'oa',
 			faultApiModePrev: 'oa',
@@ -30,6 +35,14 @@ new Vue({
 			modeSwitching: false,
 			mapLoading: true,
 			mapLoadingText: '',
+			mapCenterToast: { show: false, message: '', type: 'info' },
+			mapCenterToastTimer: null,
+			// 仅聚焦相关调试输出（故障/海缆/登陆站居中与缩放），默认开启以便排查
+			// 调试开关：默认关闭历史调试，仅按需开启当前功能相关日志
+			debugFocusEnabled: false,
+			// 瓦片模式相关调试（仅当前功能相关）
+			tileDebugEnabled: false,
+			zoomPopoverVisible: false,
 			liveScenarioRunning: false,
 			// 实况模式状态：当前运行模式、是否外部中止、进入前的自转快照（便于停止时恢复）
 			liveScenarioMode: null,
@@ -48,10 +61,9 @@ new Vue({
 			// 2D 地图版本切换
 			// 2D 地图版本选项：脚本地址用于加载底图，新增瓦片地图选项（若脚本缺失会自动回退）
 			mapVersionOptions: [
-				{ key: 'ap-zh', name: '汉化亚太中心世界地图', script: 'js/worldZH（以中国为中心）.js' },
+				{ key: 'ap-zh', name: '汉化亚太中心世界地图', script: 'js/worldZH-china-center.js' },
 				{ key: 'std-zh', name: '汉化标准版世界地图', script: 'js/worldZH.js' },
-				{ key: 'std-en', name: '英文标准世界地图', script: 'js/world.js' },
-				{ key: 'tiles', name: '瓦片地图（实验）', script: 'js/world.tiles.js' }
+				{ key: 'std-en', name: '英文标准世界地图', script: 'js/world.js' }
 			],
 			mapVersion: 'ap-zh',
 			mapVersionPrev: 'ap-zh',
@@ -73,6 +85,13 @@ new Vue({
 			threeDArcStepKm: 150,
 			_globeRebuildCache: {},
 			_suppressUpdate: false,
+			// 全局语言（zh/en），同步列表语言与 2D 普通底图版本
+			// globalLang：当前系统语言；_mapVersionZhBackup/_mapVersionEnBackup：各语言下上次的普通 2D 底图版本，用于切回时回退
+			globalLang: 'zh',
+			_mapVersionZhBackup: 'ap-zh',
+			_mapVersionEnBackup: 'std-en',
+			// i18n 词典：运行时加载 json/i18n.json，用于系统文本的中英文互译
+			i18nDict: { zh2en: {}, en2zh: {} },
 			// 每条数据项语言偏好（默认中文）
 			langPref: { cable: {}, landing: {} },
 			// 弹窗状态
@@ -98,6 +117,20 @@ new Vue({
 			rightColPct: 32.7,
 			// 浮动面板状态
 			floatingPanel: { active: false, type: null, x: 0, y: 0, w: 820, h: 520, minW: 360, minH: 260, dragging: false, resizing: false, _dx: 0, _dy: 0 },
+			// 打点编辑浮窗拖拽/位移状态（九模式通用）：
+			// - dx/dy：相对居中位置的偏移，支持自由拖拽移动；
+			// - dragging：是否处于拖拽中；startX/startY：拖拽起点屏幕坐标；
+			// - 说明：宽高调整由 CSS `resize: both` 提供，避免重复实现；
+			faultOverlayState: { dx: 0, dy: 0, dragging: false, startX: 0, startY: 0, startDx: 0, startDy: 0 },
+			// 打点模式右下浮窗拖拽/尺寸状态（九模式通用）：
+			// - dx/dy：相对默认右下位置的偏移；w/h：面板宽高（h 为 0 表示自适应）；
+			// - dragging：标题拖拽移动时为 true；startX/Y 与 startDx/Dy 记录起点。
+			faultPickPanelState: { dx: 0, dy: 0, w: 320, h: 0, dragging: false, startX: 0, startY: 0, startDx: 0, startDy: 0 },
+			// 打点右下浮窗调色盘（默认值 + 当前值，持久化于 localStorage）
+			faultPickPanelPaletteDefault: { bgColor: '#0a1224', bgOpacity: 0.88, borderColor: '#48dbfb', textColor: '#e8f4ff', titleColor: '#7ae1ff', shadowColor: '#000000', shadowOpacity: 0.35 },
+			faultPickPanelPalette: { bgColor: '#0a1224', bgOpacity: 0.88, borderColor: '#48dbfb', textColor: '#e8f4ff', titleColor: '#7ae1ff', shadowColor: '#000000', shadowOpacity: 0.35 },
+			// 调色盘是否显示（默认隐藏，独立浮层）
+			faultPickPaletteVisible: false,
 			isCompactMode: false,
 			compactPanelWidth: 420,
 			compactCollapsed: false,
@@ -105,7 +138,19 @@ new Vue({
 			userToggledCompact: false,
 			isGlobe: false,
 			legendVisible: false,
+			tileLegendFilter: { cable: true, fault: true, landing: true, faultLoc: true },
+			autoTileApplied: false,
 			focusTargetCoord: null,
+			pendingFocusRecenter3D: false,
+			// 视图状态：瓦片/2D 用户拖拽后不再被自动回中心
+			_tileUserPanned: false,
+			_tilePickCenterKey: null,
+			_geoUserLocked: false,
+			_geoUserView: { center: null, zoom: null },
+			_prevTitleBgKey: null,
+			// 3D 登陆站点击脉冲效果：坐标与过期时间（毫秒）
+			landingPulseCoord: null,
+			landingPulseUntil: 0,
 			focusedFaultLineIds: [],
 			globeTextures: { base: '', height: '', layer: '' },
 			titleBgOptions: [
@@ -115,14 +160,14 @@ new Vue({
 			],
 			currentTitleBgKey: 'banner-default',
 			globeTextureOptions: [
-				{ key: 'topo', name: '地形（默认）', base: '3D 地图资源/world.topo.bathy.200401.jpg', height: '3D 地图资源/bathymetry_bw_composite_4k.jpg', layer: '3D 地图资源/world.topo.bathy.200401.jpg' },
-				{ key: 'day8k', name: '白昼 8K', base: '3D 地图资源/earth-day-8k-sss.jpg', height: '3D 地图资源/bathymetry_bw_composite_4k.jpg', layer: '3D 地图资源/earth-day-8k-sss.jpg' },
-				{ key: 'day2k', name: '白昼 2K', base: '3D 地图资源/earth-day-2k-sss.jpg', height: '3D 地图资源/bathymetry_bw_composite_4k.jpg', layer: '3D 地图资源/earth-day-2k-sss.jpg' },
-				{ key: 'night8k', name: '夜光 8K', base: '3D 地图资源/earth-night-8k-sss.jpg', height: '3D 地图资源/bathymetry_bw_composite_4k.jpg', layer: '3D 地图资源/earth-night-8k-sss.jpg' },
-				{ key: 'night2k', name: '夜光 2K', base: '3D 地图资源/earth-night-2k-sss.jpg', height: '3D 地图资源/bathymetry_bw_composite_4k.jpg', layer: '3D 地图资源/earth-night-2k-sss.jpg' },
-				{ key: 'day', name: '标准白昼（旧）', base: '3D 地图资源/earth-day.jpg', height: '3D 地图资源/bathymetry_bw_composite_4k.jpg', layer: '3D 地图资源/earth-day.jpg' },
-				{ key: 'night', name: '城市夜光（旧）', base: '3D 地图资源/earth-night.jpg', height: '3D 地图资源/bathymetry_bw_composite_4k.jpg', layer: '3D 地图资源/earth-night.jpg' },
-				// { key: 'biaozhun', name: '国际标准地图', base: '3D 地图资源/国际标准地图.png', height: '3D 地图资源/国际标准地图.png', layer: '3D 地图资源/国际标准地图.png' }
+				{ key: 'topo', name: '地形（默认）', base: '3dMap/world.topo.bathy.200401.jpg', height: '3dMap/bathymetry_bw_composite_4k.jpg', layer: '3dMap/world.topo.bathy.200401.jpg' },
+				{ key: 'day8k', name: '白昼 8K', base: '3dMap/earth-day-8k-sss.jpg', height: '3dMap/bathymetry_bw_composite_4k.jpg', layer: '3dMap/earth-day-8k-sss.jpg' },
+				{ key: 'day2k', name: '白昼 2K', base: '3dMap/earth-day-2k-sss.jpg', height: '3dMap/bathymetry_bw_composite_4k.jpg', layer: '3dMap/earth-day-2k-sss.jpg' },
+				{ key: 'night8k', name: '夜光 8K', base: '3dMap/earth-night-8k-sss.jpg', height: '3dMap/bathymetry_bw_composite_4k.jpg', layer: '3dMap/earth-night-8k-sss.jpg' },
+				{ key: 'night2k', name: '夜光 2K', base: '3dMap/earth-night-2k-sss.jpg', height: '3dMap/bathymetry_bw_composite_4k.jpg', layer: '3dMap/earth-night-2k-sss.jpg' },
+				{ key: 'day', name: '标准白昼（旧）', base: '3dMap/earth-day.jpg', height: '3dMap/bathymetry_bw_composite_4k.jpg', layer: '3dMap/earth-day.jpg' },
+				{ key: 'night', name: '城市夜光（旧）', base: '3dMap/earth-night.jpg', height: '3dMap/bathymetry_bw_composite_4k.jpg', layer: '3dMap/earth-night.jpg' },
+				// { key: 'biaozhun', name: '国际标准地图', base: '3dMap/国际标准地图.png', height: '3dMap/国际标准地图.png', layer: '3dMap/国际标准地图.png' }
 			],
 			currentGlobeTextureKey: 'topo',
 			globeMaxDistance: 320,
@@ -137,6 +182,16 @@ new Vue({
 			// 统一缩放滑条（0-100）
 			zoomSlider: 50,
 			defaultZoomSlider: 50,
+			// 列表语言全局开关：zh/en
+			listLangGlobal: 'zh',
+			// 弹出缩放条动画：记录起点偏移、弧顶与进度
+			zoomPopoverLaunchFrom: { x: 0, y: 0 },
+			zoomPopoverArc: 40,
+			zoomPopoverAnimProgress: 0,
+			zoomPopoverAnimJelly: 0,
+			zoomPopoverAnimRaf: null,
+			// 显示状态快照堆栈：进入聚焦/打点前保存，退出时恢复，避免退出后一团乱
+			displayStateStack: [],
 			// 登陆站聚焦时是否显示关联海缆
 			landingShowAssociated: true,
 			// 聚焦名称显示控制
@@ -145,8 +200,9 @@ new Vue({
 			// 图层显示控制
 			showCables: true,
 			showLandings: true,
-			// 动效控制：走线流光动画（默认关闭，需手动开启以减轻性能负担）
-			lineEffectEnabled: false,
+			// 动效控制：走线流光与涟漪默认全模式开启，后续可手动关闭
+			lineEffectEnabled: true,
+			rippleEffectEnabled: true,
 			cablePage: 1,
 			cablePageSize: 50,
 			cablePageInput: 1,
@@ -156,7 +212,12 @@ new Vue({
 			searchLanding: '',
 			searchFault: '',
 			// 地图显示故障海缆
+			// 仅显示故障相关点线（基础层与叠加均受控）
+			faultOnlyOnMap: false,
 			showFaultCablesOnMap: true,
+			// 打点浮窗：下拉切换加载进度
+			faultPickLoading: false,
+			faultPickLoadText: '',
 			// 悬停同步高亮：当前悬停海缆ID
 			hoveredCableId: null,
 			// 故障列表（来自接口）
@@ -174,14 +235,14 @@ new Vue({
 					end: '',
 					workOrder: 'DEMO-PA-001',
 					isMajor: '是',
-					cableName: 'PAC',
+					cableName: 'PAC Demo-1',
 					cause: '待排查（演示）',
 					progress: '演示：已通知船舶靠近测量',
 					impact: '跨洋业务切至保护路由（演示）',
 					remark: '演示数据，用于接口不可用兜底展示。',
 					lastModifier: '演示模式',
 					faultId: 'demo-pa-1',
-					involvedCable1: 'PAC',
+					involvedCable1: 'PAC Demo-1',
 					involvedLanding1: '上海',
 					distance1: '12450',
 					pointCoord1: '121.47,31.23'
@@ -195,17 +256,46 @@ new Vue({
 					end: '',
 					workOrder: 'DEMO-EU-017',
 					isMajor: '否',
-					cableName: 'FLAG North Asia Loop/REACH North Asia Loop',
+					cableName: 'EAE Demo-2',
 					cause: '局端维护（演示）',
 					progress: '演示：正在分光测量并切换业务',
 					impact: '国际专线半保护（演示）',
 					remark: '演示用途，接口故障时显示。',
 					lastModifier: '演示模式',
 					faultId: 'demo-eu-2',
-					involvedCable1: 'FLAG North Asia Loop/REACH North Asia Loop',
-					involvedLanding1: 'Wada, Japan',
-					distance1: '1279.13',
-					pointCoord1: '134.406703,25.722160',
+					involvedCable1: 'EAE Demo-2',
+					involvedLanding1: '马赛',
+					distance1: '50',
+					pointCoord1: '5.37,43.30',
+					involvedCable2: 'EAE Demo-2',
+					involvedLanding2: '亚历山大',
+					distance2: '65',
+					pointCoord2: '29.91,31.20'
+				},
+				{
+					name: 'DEMO-区域联络维护窗口',
+					desc: '演示：沿海支线例行维护，割接窗口内观察质量。',
+					registrar: '演示调度',
+					sameRoute: '南海沿海支线',
+					start: '2025-10-02 22:00',
+					end: '2025-10-03 04:00',
+					workOrder: 'DEMO-SE-009',
+					isMajor: '否',
+					cableName: 'SEA Demo-3',
+					cause: '计划维护（演示）',
+					progress: '演示：链路监控中，待复测',
+					impact: '部分省际专线单链路运行（演示）',
+					remark: '仅演示数据，接口不可用时兜底。',
+					lastModifier: '演示模式',
+					faultId: 'demo-se-3',
+					involvedCable1: 'SEA Demo-3',
+					involvedLanding1: '三亚',
+					distance1: '20',
+					pointCoord1: '109.50,18.25',
+					involvedCable2: 'SEA Demo-3',
+					involvedLanding2: '马尼拉',
+					distance2: '18',
+					pointCoord2: '121.00,14.60'
 				}
 			],
 			lastRealFaults: [],
@@ -228,7 +318,7 @@ new Vue({
 			faultTooltipWidth: 760,
 			cableTooltipWidth: 380,
 			landingTooltipWidth: 380,
-			faultEditState: { active: false, index: null, cable: '', landing: '', distance: '', pointCoord: '', picking: false, saving: false, error: '' },
+			faultEditState: { active: false, index: null, cable: '', landing: '', distance: '', pointCoord: '', remark: '', picking: false, saving: false, error: '' },
 			faultOverlayMode: false,
 			faultPointMarker: null,
 			faultPickHover: null,
@@ -350,6 +440,56 @@ new Vue({
 		}
 	},
 	computed: {
+		// 打点右下浮窗样式：合并用户调色盘与动态尺寸/位移（九模式共用）
+		faultPickPanelStyle() {
+			const base = this.faultPickPanelState || {};
+			const palette = this.faultPickPanelPalette || this.faultPickPanelPaletteDefault;
+			const bg = this.composeRgba(palette.bgColor, palette.bgOpacity);
+			const shadow = `0 16px 34px ${this.composeRgba(palette.shadowColor, palette.shadowOpacity)}`;
+			return {
+				transform: `translate(${base.dx || 0}px,${base.dy || 0}px)`,
+				width: base.w ? `${base.w}px` : null,
+				height: base.h ? `${base.h}px` : null,
+				background: bg,
+				border: `1px solid ${palette.borderColor}`,
+				color: palette.textColor,
+				boxShadow: shadow
+			};
+		},
+		// 打点右下浮窗标题样式：随调色盘变化（九模式共用）
+		faultPickPanelTitleStyle() {
+			const palette = this.faultPickPanelPalette || this.faultPickPanelPaletteDefault;
+			return { color: palette.titleColor };
+		},
+		// 调色盘浮窗样式：独立面板共享同一调色盘
+		// - 使用与编辑浮窗一致的配色，保证九模式下视觉统一
+		faultPickPaletteStyle() {
+			const palette = this.faultPickPanelPalette || this.faultPickPanelPaletteDefault;
+			const bg = this.composeRgba(palette.bgColor, palette.bgOpacity);
+			return {
+				background: bg,
+				border: `1px solid ${palette.borderColor}`,
+				color: palette.textColor,
+				boxShadow: `0 14px 28px ${this.composeRgba(palette.shadowColor, palette.shadowOpacity)}`
+			};
+		},
+		// 信息盒样式（距离/经纬度）：随调色盘同步
+		// - 背景使用调色盘背景色并略微降低透明度，边框/文字继承调色盘设置
+		faultPickInfoBoxStyle() {
+			const p = this.faultPickPanelPalette || this.faultPickPanelPaletteDefault;
+			const bg = this.composeRgba(p.bgColor, Math.min(1, Math.max(0, (p.bgOpacity ?? 0.88) * 0.65)));
+			return {
+				background: bg,
+				color: p.textColor,
+				boxShadow: `0 8px 18px ${this.composeRgba(p.shadowColor, Math.min(1, Math.max(0, (p.shadowOpacity ?? 0.35) * 0.8)))}`
+			};
+		},
+		// 信息盒中的值样式：采用更鲜艳的调色盘标题色
+		// - 与调色盘同步，保持九模式一致的“高亮值”视觉
+		faultPickInfoValueStyle() {
+			const p = this.faultPickPanelPalette || this.faultPickPanelPaletteDefault;
+			return { color: p.titleColor };
+		},
 		landingNameOptions() {
 			return (this.landingList || []).map(lp => lp.name).filter(Boolean);
 		},
@@ -484,7 +624,7 @@ new Vue({
 						const coordStr = c.join(',');
 						if (set.has(coordStr)) return;
 						set.add(coordStr);
-						arr.push({ name: `登陆站 ${arr.length + 1}`, coords: c, coordStr, country: '未标注', ownership: '非权益', ownershipClass: this.ownershipClass('非权益') });
+						arr.push({ name: `${this.t('登陆站')} ${arr.length + 1}`, coords: c, coordStr, country: '未标注', ownership: '非权益', ownershipClass: this.ownershipClass('非权益') });
 					}));
 					return arr;
 				})();
@@ -698,6 +838,33 @@ new Vue({
 			const list = this.normalizeLandingPoints(detail);
 			if (!list || !list.length) return [];
 			return list.slice(0, 4).map(lp => ({ ...lp, country: lp.country || lp.nation || lp.country_name || '' }));
+		},
+		zoomPopoverStyle() {
+			const base = {
+				position: 'absolute',
+				left: '50%',
+				bottom: '22px',
+				zIndex: 2100,
+				padding: '10px 12px',
+				width: '360px',
+				borderRadius: '12px',
+				backdropFilter: 'blur(12px)',
+				background: 'rgba(255,255,255,0.08)',
+				border: '1px solid rgba(255,255,255,0.35)',
+				boxShadow: '0 14px 38px rgba(0,0,0,0.38), 0 0 16px rgba(72,219,251,0.32)',
+				display: this.zoomPopoverVisible || this.zoomPopoverAnimProgress > 0 ? 'block' : 'none',
+				transition: 'opacity 0.35s ease-out'
+			};
+			const offX = this.zoomPopoverLaunchFrom?.x || 0;
+			const offY = this.zoomPopoverLaunchFrom?.y || 0;
+			const arc = this.zoomPopoverArc || 0;
+			const p = Math.max(0, Math.min(1, this.zoomPopoverAnimProgress || 0));
+			const x = offX * (1 - p);
+			const y = (offY * (1 - p)) - (arc * p * (1 - p) * 4); // 简单抛物线：p=0/1 时 0，p=0.5 时达到弧顶
+			const jelly = this.zoomPopoverVisible ? (this.zoomPopoverAnimJelly || 0) : -0.12;
+			base.transform = `translate(-50%, 0) translate(${x}px, ${y}px) scale(${1 + jelly})`;
+			base.opacity = this.zoomPopoverVisible ? 1 : 0;
+			return base;
 		}
 	},
 	watch: {
@@ -753,6 +920,11 @@ new Vue({
 			}
 			this.updateChart();
 		},
+		faultOnlyOnMap(val) {
+			// 仅显示故障时自动打开故障叠加，解除后恢复常规刷新
+			if (val) this.showFaultCablesOnMap = true;
+			this.updateChart();
+		},
 		displayFaults: {
 			handler(val) {
 				try {
@@ -773,9 +945,178 @@ new Vue({
 		}
 	},
 	methods: {
+		// 十六进制 + 透明度转 rgba，容错短格式 #rgb，默认回退黑色
+		composeRgba(hex = '#000000', opacity = 1) {
+			const safeOpacity = Math.max(0, Math.min(1, Number(opacity ?? 1)));
+			const raw = (hex || '').toString().replace('#', '').trim();
+			const norm = raw.length === 3 ? raw.split('').map(c => c + c).join('') : raw.padEnd(6, '0').slice(0, 6);
+			const r = parseInt(norm.slice(0, 2), 16);
+			const g = parseInt(norm.slice(2, 4), 16);
+			const b = parseInt(norm.slice(4, 6), 16);
+			const safe = (v) => Number.isFinite(v) ? v : 0;
+			return `rgba(${safe(r)},${safe(g)},${safe(b)},${safeOpacity})`;
+		},
+		// 调色盘归一化：校正颜色/透明度，避免存储异常
+		sanitizeFaultPickPalette(input) {
+			const base = this.faultPickPanelPaletteDefault;
+			const p = input || this.faultPickPanelPalette || {};
+			const clamp01 = (v, fallback) => {
+				const n = Number(v);
+				if (!Number.isFinite(n)) return fallback;
+				return Math.min(1, Math.max(0, n));
+			};
+			this.faultPickPanelPalette = {
+				bgColor: p.bgColor || base.bgColor,
+				bgOpacity: clamp01(p.bgOpacity, base.bgOpacity),
+				borderColor: p.borderColor || base.borderColor,
+				textColor: p.textColor || base.textColor,
+				titleColor: p.titleColor || base.titleColor,
+				shadowColor: p.shadowColor || base.shadowColor,
+				shadowOpacity: clamp01(p.shadowOpacity, base.shadowOpacity)
+			};
+		},
+		// 读取本地调色盘（九模式共用）
+		loadFaultPickPalette() {
+			try {
+				const raw = localStorage.getItem('dp6.faultPickPalette');
+				const parsed = raw ? JSON.parse(raw) : null;
+				this.sanitizeFaultPickPalette(parsed || this.faultPickPanelPaletteDefault);
+			} catch (e) {
+				this.sanitizeFaultPickPalette(this.faultPickPanelPaletteDefault);
+			}
+		},
+		// 保存当前调色盘到本地
+		// - silent=true：仅持久化不提示，用于滑块/取色器实时预览
+		saveFaultPickPalette(silent = true) {
+			try {
+				this.sanitizeFaultPickPalette();
+				localStorage.setItem('dp6.faultPickPalette', JSON.stringify(this.faultPickPanelPalette));
+				if (!silent) {
+					// 打点调色盘保存提示：九模式一致，仅提示按钮显式保存
+					this.notifyToast(this.t('样式已保存'), 'success');
+				}
+			} catch (e) { /* noop */ }
+		},
+		// 恢复默认调色盘并保存
+		resetFaultPickPalette() {
+			this.sanitizeFaultPickPalette(this.faultPickPanelPaletteDefault);
+			this.saveFaultPickPalette(true);
+			// 恢复默认提示：便于打点模式确认
+			this.notifyToast(this.t('已恢复默认'), 'info');
+		},
+		// 显示调色盘浮窗（九模式通用）：
+		// - 独立浮层默认隐藏，仅在打点编辑框中通过按钮显隐
+		// - 进入/退出打点模式会自动关闭，避免残留遮挡
+		showFaultPickPalette() { this.faultPickPaletteVisible = true; },
+		// 关闭调色盘浮窗（九模式通用）
+		closeFaultPickPalette() { this.faultPickPaletteVisible = false; },
+		// 保留调色盘显隐：字段显隐已移除，编辑框更聚焦
+		// 保存当前点线/效果/标签等显示状态，用于聚焦/打点退出时恢复
+		pushDisplayState(reason = '') {
+			try {
+				this.displayStateStack.push({
+					reason,
+					showCables: this.showCables,
+					showLandings: this.showLandings,
+					showFaultCablesOnMap: this.showFaultCablesOnMap,
+					showLandingLabels: this.showLandingLabels,
+					lineEffectEnabled: this.lineEffectEnabled,
+					rippleEffectEnabled: this.rippleEffectEnabled
+				});
+			} catch (e) { /* noop */ }
+		},
+		// 恢复最近一次保存的显示状态
+		restoreDisplayState() {
+			try {
+				const snap = this.displayStateStack.pop();
+				if (!snap) return;
+				this.showCables = !!snap.showCables;
+				this.showLandings = !!snap.showLandings;
+				this.showFaultCablesOnMap = !!snap.showFaultCablesOnMap;
+				this.showLandingLabels = !!snap.showLandingLabels;
+				this.lineEffectEnabled = !!snap.lineEffectEnabled;
+				this.rippleEffectEnabled = !!snap.rippleEffectEnabled;
+				this.updateChart();
+			} catch (e) { /* noop */ }
+		},
 		resetZoomSlider() {
 			this.zoomSlider = this.defaultZoomSlider || 0;
 			this.onZoomSlider();
+		},
+		toggleZoomPopover() {
+			// 关闭：直接收起并重置动画状态
+			if (this.zoomPopoverVisible) {
+				if (this.zoomPopoverAnimRaf) cancelAnimationFrame(this.zoomPopoverAnimRaf);
+				this.zoomPopoverAnimRaf = null;
+				this.zoomPopoverVisible = false;
+				this.zoomPopoverAnimProgress = 0;
+				this.zoomPopoverAnimJelly = 0;
+				return;
+			}
+			const trigger = this.$refs.zoomPopoverTrigger;
+			const mapEl = this.$refs.map || document.getElementById('worldCableMap');
+			if (trigger && mapEl) {
+				const tRect = trigger.getBoundingClientRect();
+				const mRect = mapEl.getBoundingClientRect();
+				const startX = tRect.left + tRect.width / 2;
+				const startY = tRect.top + tRect.height / 2;
+				const targetX = mRect.left + mRect.width / 2;
+				const targetY = mRect.bottom - 22; // 对齐地图底部的最终位置
+				const dx = startX - targetX;
+				const dy = startY - targetY;
+				this.zoomPopoverLaunchFrom = { x: dx, y: dy };
+				this.zoomPopoverArc = Math.min(180, Math.max(24, Math.abs(dx) * 0.2 + 32));
+			}
+			this.zoomPopoverVisible = true;
+			// 打开时同步一次缩放，保持与主控一致
+			this.onZoomSlider();
+			this.zoomPopoverAnimProgress = 0;
+			this.zoomPopoverAnimJelly = 0;
+			if (this.zoomPopoverAnimRaf) cancelAnimationFrame(this.zoomPopoverAnimRaf);
+			this.$nextTick(() => {
+				const travelMs = 500;
+				const settleMs = 500;
+				const start = performance.now();
+				const runSettle = (settleStart) => {
+					const settleStep = (ts) => {
+						const t = Math.max(0, Math.min(1, (ts - settleStart) / settleMs));
+						// 抵达后的加大 Q 弹：幅度更大，随时间衰减
+						const jelly = Math.sin(t * Math.PI * 1.1) * 0.14 * (1 - t * 0.35);
+						this.zoomPopoverAnimProgress = 1;
+						this.zoomPopoverAnimJelly = jelly;
+						if (t < 1 && this.zoomPopoverVisible) {
+							this.zoomPopoverAnimRaf = requestAnimationFrame(settleStep);
+						} else {
+							this.zoomPopoverAnimRaf = null;
+							this.zoomPopoverAnimJelly = 0;
+						}
+					};
+					this.zoomPopoverAnimRaf = requestAnimationFrame(settleStep);
+				};
+				const runTravel = (ts) => {
+					const t = Math.max(0, Math.min(1, (ts - start) / travelMs));
+					// 先慢后快的抛物线运动
+					const ease = 1 - Math.pow(1 - t, 3);
+					const jelly = Math.sin(Math.min(1, t) * Math.PI) * 0.08;
+					this.zoomPopoverAnimProgress = ease;
+					this.zoomPopoverAnimJelly = jelly;
+					if (t < 1 && this.zoomPopoverVisible) {
+						this.zoomPopoverAnimRaf = requestAnimationFrame(runTravel);
+					} else if (this.zoomPopoverVisible) {
+						runSettle(performance.now());
+					} else {
+						this.zoomPopoverAnimRaf = null;
+						this.zoomPopoverAnimJelly = 0;
+					}
+				};
+				this.zoomPopoverAnimRaf = requestAnimationFrame(runTravel);
+			});
+		},
+		// 涟漪周期轻度随机，避免多系列同步呼吸
+		randomRipplePeriod(base = 2.8, jitter = 0.8) {
+			const min = Math.max(0.6, base - jitter);
+			const max = base + jitter;
+			return Number((min + Math.random() * (max - min)).toFixed(2));
 		},
 		// 等待两帧以确保 loading 先渲染到屏幕，避免空白期
 		async uiFlush() {
@@ -792,7 +1133,7 @@ new Vue({
 				this.updateChart();
 				// 简短补充提示，确保用户感知重绘完成
 				this.mapLoading = true;
-				this.mapLoadingText = '正在切换底色（2/2：重绘中）…';
+				this.mapLoadingText = this.t('正在切换底色（2/2：重绘中）…');
 				await this.uiFlush();
 				setTimeout(() => { this.mapLoading = false; this.mapLoadingText = ''; }, 480);
 			},
@@ -801,10 +1142,15 @@ new Vue({
 				const action = this.globeGlowEnabled ? '关闭' : '开启';
 				this.globeGlowEnabled = !this.globeGlowEnabled;
 				if (!this.isGlobe) return;
-				await this.queueMapLoading(`正在${action} 3D 光效（1/2：应用配置）…`, 600);
+				const msg1 = action === '开启'
+					? '正在开启 3D 光效（1/2：应用配置）…'
+					: '正在关闭 3D 光效（1/2：应用配置）…';
+				await this.queueMapLoading(msg1, 600);
 				this.updateChart();
 				this.mapLoading = true;
-				this.mapLoadingText = `正在${action} 3D 光效（2/2：重绘）…`;
+				this.mapLoadingText = this.t(action === '开启'
+					? '正在开启 3D 光效（2/2：重绘）…'
+					: '正在关闭 3D 光效（2/2：重绘）…');
 				await this.uiFlush();
 				setTimeout(() => { this.mapLoading = false; this.mapLoadingText = ''; }, 520);
 			},
@@ -813,10 +1159,15 @@ new Vue({
 				const next = !this.lineEffectEnabled;
 				const action = next ? '开启' : '关闭';
 				this.lineEffectEnabled = next;
-				await this.queueMapLoading(`正在${action}走线效果（1/2：应用配置）…`, 520);
+				const msg1 = action === '开启'
+					? '正在开启走线效果（1/2：应用配置）…'
+					: '正在关闭走线效果（1/2：应用配置）…';
+				await this.queueMapLoading(msg1, 520);
 				this.updateChart();
 				this.mapLoading = true;
-				this.mapLoadingText = `正在${action}走线效果（2/2：重绘）…`;
+				this.mapLoadingText = this.t(action === '开启'
+					? '正在开启走线效果（2/2：重绘）…'
+					: '正在关闭走线效果（2/2：重绘）…');
 				await this.uiFlush();
 				setTimeout(() => { this.mapLoading = false; this.mapLoadingText = ''; }, 480);
 			},
@@ -828,7 +1179,7 @@ new Vue({
 				await this.queueMapLoading('正在切换 3D 光效风格（1/2）…', 600);
 				this.updateChart();
 				this.mapLoading = true;
-				this.mapLoadingText = '正在切换 3D 光效风格（2/2：重绘）…';
+				this.mapLoadingText = this.t('正在切换 3D 光效风格（2/2：重绘）…');
 				await this.uiFlush();
 				setTimeout(() => { this.mapLoading = false; this.mapLoadingText = ''; }, 520);
 			},
@@ -841,7 +1192,7 @@ new Vue({
 				await this.queueMapLoading('正在调整光效亮度（1/2）…', 500);
 				this.updateChart();
 				this.mapLoading = true;
-				this.mapLoadingText = '正在调整光效亮度（2/2：重绘）…';
+				this.mapLoadingText = this.t('正在调整光效亮度（2/2：重绘）…');
 				await this.uiFlush();
 				setTimeout(() => { this.mapLoading = false; this.mapLoadingText = ''; }, 480);
 			},
@@ -899,7 +1250,7 @@ new Vue({
 			// 生成控制室接口的完整基础地址（与故障接口一致）
 			authBaseUrl() {
 				const host = this.faultApiHost();
-				return host ? `http://${host}/fault_data_url/index.php` : '/fault_data_url/index.php';
+				return host ? `http://${host}/controlRoomPrivate/index.php` : '/controlRoomPrivate/index.php';
 			},
 			// 首次鉴权前先探测可用的故障接口 IP，确保登录接口同源
 			async ensureFaultApiModeReady() {
@@ -953,7 +1304,7 @@ new Vue({
 				const message = '需登录“生产信息管理系统”后使用，请在【生产信息系统-大屏系统-海缆信息】中打开海缆信息管理与展示系统。';
 				const openLogin = () => this.openControlRoomLogin(base);
 				if (this.$alert) {
-					this.$alert(message, '登录校验', {
+					this.$alert(message, this.t('登录校验'), {
 						confirmButtonText: '前往登录',
 						customClass: 'sci-login-alert',
 						callback: () => openLogin()
@@ -963,7 +1314,7 @@ new Vue({
 					openLogin();
 				}
 			},
-			openControlRoomLogin(baseUrl = '/login_url/index.php') {
+			openControlRoomLogin(baseUrl = '/controlRoomPrivate/index.php') {
 				const target = `${baseUrl}`;
 				window.location.href = target;
 			},
@@ -975,18 +1326,19 @@ new Vue({
 					await new Promise(resolve => setTimeout(resolve, 80));
 					tries += 1;
 				}
+				const msg = this.t(text);
 				this.mapLoading = true;
-				this.mapLoadingText = text;
+				this.mapLoadingText = msg;
 				await this.uiFlush();
 				setTimeout(() => {
-					if (this.mapLoadingText === text) {
+					if (this.mapLoadingText === msg) {
 						this.mapLoading = false;
 						this.mapLoadingText = '';
 					}
 				}, duration);
 			},
 		// 右下角弹窗（Element UI Notification）：用于“重算并保存”等后台结果提示
-		notifyToast(message, type = 'info', title = '提示') {
+		notifyToast(message, type = 'info', title = this.t('提示')) {
 			try {
 				if (this.$notify) {
 					this.$notify({
@@ -999,6 +1351,132 @@ new Vue({
 					});
 				}
 			} catch (e) { /* noop */ }
+		},
+		// 点涟漪开关：作用于 2D/3D/tiles、聚焦/打点/实况下的所有涟漪点
+		toggleRippleEffect() {
+			this.rippleEffectEnabled = !this.rippleEffectEnabled;
+			this.updateChart();
+		},
+		// 聚焦调试输出：仅在 debugFocusEnabled 为真时打印；精简为仅输出本次新增功能相关事件
+		focusDebug(msg, payload = null) {
+			try {
+				if (!this.debugFocusEnabled) return;
+				const tag = '[聚焦调试]';
+				if (payload != null) {
+					console.log(tag + ' ' + msg, payload);
+				} else {
+					console.log(tag + ' ' + msg);
+				}
+			} catch (e) { /* noop */ }
+		},
+		// 文本域自适应高度（仅当前功能相关）：
+		// 用途：打点/编辑面板中的“故障点备注”文本域，根据内容动态自适应高度；
+		// 说明：保留用户手动拖拽（resize: both），同时在输入时通过 scrollHeight 回缩到合适高度；
+		// 兼容：紧凑/大屏、2D/3D/瓦片、聚焦/打点/实况九模式；对其他输入框不做任何影响。
+		autoResizeTextarea(event) {
+			try {
+				const el = event?.target;
+				if (!el) return;
+				el.style.height = 'auto';
+				el.style.height = `${el.scrollHeight + 2}px`;
+			} catch (e) { /* noop */ }
+		},
+		// 地图中心短暂提示：用于无定位等场景的科技风提示
+		showMapCenterToast(message, type = 'info', duration = 4000) {
+			try { if (this.mapCenterToastTimer) clearTimeout(this.mapCenterToastTimer); } catch (e) { /* noop */ }
+			this.mapCenterToast = { show: true, message, type };
+			this.mapCenterToastTimer = setTimeout(() => {
+				this.mapCenterToast = { show: false, message: '', type: 'info' };
+				this.mapCenterToastTimer = null;
+			}, duration);
+		},
+		// 瓦片模式容器内的临时提示（与大屏风格匹配）
+		showTileCenterToast(message, type = 'warning', duration = 4600) {
+			try {
+				const container = this.$refs.map || document.getElementById('worldCableMap');
+				if (!container) return;
+				let tip = document.getElementById('tile-center-toast');
+				if (tip && !container.contains(tip)) { try { tip.remove(); } catch (e) { /* noop */ } tip = null; }
+				if (!tip) {
+					tip = document.createElement('div');
+					tip.id = 'tile-center-toast';
+					tip.style.position = 'absolute';
+					tip.style.left = '50%';
+					tip.style.top = '50%';
+					tip.style.transform = 'translate(-50%, -50%)';
+					tip.style.zIndex = '40';
+					tip.style.minWidth = '420px';
+					tip.style.maxWidth = '70%';
+					tip.style.padding = '16px 18px';
+					tip.style.borderRadius = '14px';
+					tip.style.backdropFilter = 'blur(6px)';
+					tip.style.boxShadow = '0 18px 48px rgba(0,0,0,0.35), 0 0 22px rgba(72,219,251,0.35)';
+					tip.style.textAlign = 'center';
+					tip.style.fontWeight = '700';
+					tip.style.letterSpacing = '0.3px';
+					tip.style.pointerEvents = 'none';
+					container.appendChild(tip);
+				}
+				const palette = type === 'warning' ? { bg: 'rgba(38,22,10,0.85)', border: 'rgba(255,158,66,0.65)', color: '#ffe7c2', glow: 'rgba(255,158,66,0.45)' }
+					: { bg: 'rgba(9,18,34,0.9)', border: 'rgba(72,219,251,0.65)', color: '#e8f7ff', glow: 'rgba(72,219,251,0.35)' };
+				tip.style.background = palette.bg;
+				tip.style.border = `1px solid ${palette.border}`;
+				tip.style.color = palette.color;
+				tip.style.boxShadow = `0 18px 48px rgba(0,0,0,0.35), 0 0 22px ${palette.glow}`;
+				tip.innerText = message;
+				tip.style.opacity = '1';
+				tip.style.transition = 'opacity 240ms ease';
+				setTimeout(() => { if (tip) tip.style.opacity = '0'; }, Math.max(0, duration - 260));
+				setTimeout(() => { try { if (tip && tip.parentElement) tip.parentElement.removeChild(tip); } catch (e) { /* noop */ } }, duration + 220);
+			} catch (e) { /* noop */ }
+		},
+		// 瓦片打点模式临时标题（纯文本，不覆盖主标题）
+		setTilePickTitle(text) {
+			try {
+				let box = document.getElementById('tile-pick-title');
+				if (!text) {
+					if (box && box.parentNode) box.parentNode.removeChild(box);
+					return;
+				}
+				if (!box) {
+					box = document.createElement('div');
+					box.id = 'tile-pick-title';
+					Object.assign(box.style, {
+						position: 'absolute',
+						top: '18px',
+						left: '50%',
+						transform: 'translateX(-50%)',
+						zIndex: '42',
+						color: '#9ce1ff',
+						fontWeight: '800',
+						fontSize: '17px',
+						letterSpacing: '0.6px',
+						padding: '6px 12px',
+						background: 'linear-gradient(135deg, rgba(8,32,58,0.82), rgba(10,72,110,0.72))',
+						border: '1px solid rgba(0,229,255,0.35)',
+						borderRadius: '12px',
+						boxShadow: '0 0 22px rgba(0,229,255,0.22)',
+						pointerEvents: 'none',
+						whiteSpace: 'nowrap'
+					});
+					const container = this.$refs.map || document.getElementById('worldCableMap') || document.body;
+					container.appendChild(box);
+				}
+				box.textContent = text;
+			} catch (e) { /* noop */ }
+		},
+		// 故障是否具备定位坐标（任一经纬度可解析视为有定位）
+		faultHasLocation(f) {
+			if (!f) return false;
+			for (let i = 1; i <= 3; i++) {
+				const coord = this.parseCoordStr(f[`pointCoord${i}`]);
+				if (Array.isArray(coord) && coord.length === 2 && coord.every(v => isFinite(Number(v)))) return true;
+			}
+			return false;
+		},
+		// 当前聚焦故障是否具备定位，用于决定是否展示登陆站标签
+		hasActiveFaultLocation() {
+			return this.focusMode === 'fault' && this.faultHasLocation(this.selectedFault);
 		},
 		// 自转速度归一化：限制合理区间避免异常值放大
 		normalizeAutoRotateSpeed(val) {
@@ -1090,7 +1568,7 @@ new Vue({
 				this.realtimeEnabled = false;
 				if (this.realtimeTimerId) { try { clearInterval(this.realtimeTimerId); } catch (e) { } this.realtimeTimerId = null; }
 				if (this.realtimeCountdownTimerId) { try { clearInterval(this.realtimeCountdownTimerId); } catch (e) { } this.realtimeCountdownTimerId = null; }
-				this.realtimeMessage = '实况已关闭';
+				this.realtimeMessage = this.t('实况已关闭');
 			} else {
 				this.realtimeEnabled = true;
 				// 立即刷新一次
@@ -1106,7 +1584,7 @@ new Vue({
 					this.realtimeCountdown = Math.max(0, (this.realtimeCountdown || 0) - 1);
 					if (this.realtimeCountdown <= 0) this.realtimeCountdown = 300;
 				}, 1000);
-				this.realtimeMessage = '实况已开启：每 5 分钟自动刷新故障数据';
+				this.realtimeMessage = this.t('实况已开启：每 5 分钟自动刷新故障数据');
 			}
 		},
 		startDragV(e) {
@@ -1237,6 +1715,61 @@ new Vue({
 				window.addEventListener('mouseup', onUp);
 			} catch (e2) { /* noop */ }
 		},
+		// 开始拖拽打点右下浮窗（当前功能相关）：标题为拖拽把手；支持九模式通用。
+		startFaultPickPanelDrag(e) {
+			try {
+				if (!this.faultEditState.picking) return;
+				const startX = e.clientX, startY = e.clientY;
+				this.faultPickPanelState.dragging = true;
+				this.faultPickPanelState.startX = startX;
+				this.faultPickPanelState.startY = startY;
+				this.faultPickPanelState.startDx = this.faultPickPanelState.dx;
+				this.faultPickPanelState.startDy = this.faultPickPanelState.dy;
+				const onMove = (ev) => {
+					if (!this.faultPickPanelState.dragging) return;
+					const dx = ev.clientX - this.faultPickPanelState.startX;
+					const dy = ev.clientY - this.faultPickPanelState.startY;
+					this.faultPickPanelState.dx = this.faultPickPanelState.startDx + dx;
+					this.faultPickPanelState.dy = this.faultPickPanelState.startDy + dy;
+				};
+				const onUp = () => {
+					this.faultPickPanelState.dragging = false;
+					window.removeEventListener('mousemove', onMove);
+					window.removeEventListener('mouseup', onUp);
+				};
+				window.addEventListener('mousemove', onMove);
+				window.addEventListener('mouseup', onUp);
+			} catch (e2) { /* noop */ }
+		},
+			// 开始拖拽打点编辑浮窗（当前功能相关）：
+			// - 在 `.overlay-header` 上按下触发，记录起点与当前偏移；
+			// - 绑定 window 的 mousemove/mouseup，实现随鼠标移动；
+			// - 九模式通用：紧凑/大屏、2D/3D/瓦片、聚焦/打点/实况。
+			startFaultOverlayDrag(e) {
+				try {
+					if (!this.faultEditState.active) return;
+					const startX = e.clientX, startY = e.clientY;
+					this.faultOverlayState.dragging = true;
+					this.faultOverlayState.startX = startX;
+					this.faultOverlayState.startY = startY;
+					this.faultOverlayState.startDx = this.faultOverlayState.dx;
+					this.faultOverlayState.startDy = this.faultOverlayState.dy;
+					const onMove = (ev) => {
+						if (!this.faultOverlayState.dragging) return;
+						const dx = ev.clientX - this.faultOverlayState.startX;
+						const dy = ev.clientY - this.faultOverlayState.startY;
+						this.faultOverlayState.dx = this.faultOverlayState.startDx + dx;
+						this.faultOverlayState.dy = this.faultOverlayState.startDy + dy;
+					};
+					const onUp = () => {
+						this.faultOverlayState.dragging = false;
+						window.removeEventListener('mousemove', onMove);
+						window.removeEventListener('mouseup', onUp);
+					};
+					window.addEventListener('mousemove', onMove);
+					window.addEventListener('mouseup', onUp);
+				} catch (e2) { /* noop */ }
+			},
 		startCompactResize(e) {
 			try {
 				const startX = e.clientX;
@@ -1456,108 +1989,39 @@ new Vue({
 		translateCountryToZh(val) {
 			if (!val) return '';
 			const s = String(val).trim();
-			const dict = {
-				'China': '中国', 'PRC': '中国', 'Mainland China': '中国大陆', 'Taiwan': '中国台湾省', 'Hong Kong': '中国香港', 'Macau': '中国澳门',
-				'United States': '美国', 'USA': '美国', 'U.S.': '美国', 'America': '美国',
-				'United Kingdom': '英国', 'UK': '英国', 'Great Britain': '英国',
-				'Germany': '德国', 'France': '法国', 'Italy': '意大利', 'Spain': '西班牙', 'Portugal': '葡萄牙', 'Netherlands': '荷兰', 'Belgium': '比利时', 'Switzerland': '瑞士', 'Austria': '奥地利',
-				'Sweden': '瑞典', 'Norway': '挪威', 'Denmark': '丹麦', 'Finland': '芬兰', 'Russia': '俄罗斯', 'Ukraine': '乌克兰', 'Poland': '波兰',
-				'Czech Republic': '捷克', 'Hungary': '匈牙利', 'Romania': '罗马尼亚', 'Bulgaria': '保加利亚', 'Greece': '希腊', 'Turkey': '土耳其',
-				'Japan': '日本', 'South Korea': '韩国', 'Korea, Republic of': '韩国', 'North Korea': '朝鲜', 'Mongolia': '蒙古',
-				'India': '印度', 'Pakistan': '巴基斯坦', 'Bangladesh': '孟加拉国', 'Sri Lanka': '斯里兰卡', 'Nepal': '尼泊尔', 'Bhutan': '不丹',
-				'Myanmar': '缅甸', 'Thailand': '泰国', 'Laos': '老挝', 'Cambodia': '柬埔寨', 'Vietnam': '越南',
-				'Malaysia': '马来西亚', 'Singapore': '新加坡', 'Indonesia': '印度尼西亚', 'Philippines': '菲律宾', 'Brunei': '文莱', 'Timor-Leste': '东帝汶',
-				'Australia': '澳大利亚', 'New Zealand': '新西兰', 'Canada': '加拿大', 'Mexico': '墨西哥',
-				'Brazil': '巴西', 'Argentina': '阿根廷', 'Chile': '智利', 'Peru': '秘鲁', 'Colombia': '哥伦比亚', 'Venezuela': '委内瑞拉', 'Uruguay': '乌拉圭', 'Paraguay': '巴拉圭', 'Bolivia': '玻利维亚', 'Ecuador': '厄瓜多尔',
-				'Panama': '巴拿马', 'Costa Rica': '哥斯达黎加', 'El Salvador': '萨尔瓦多', 'Guatemala': '危地马拉', 'Honduras': '洪都拉斯', 'Nicaragua': '尼加拉瓜',
-				'Cuba': '古巴', 'Dominican Republic': '多米尼加', 'Haiti': '海地', 'Jamaica': '牙买加', 'Bahamas': '巴哈马', 'Trinidad and Tobago': '特立尼达和多巴哥',
-				'Saudi Arabia': '沙特阿拉伯', 'United Arab Emirates': '阿联酋', 'UAE': '阿联酋', 'Qatar': '卡塔尔', 'Bahrain': '巴林', 'Kuwait': '科威特', 'Oman': '阿曼',
-				'Iran': '伊朗', 'Iraq': '伊拉克', 'Israel': '以色列', 'Palestine': '巴勒斯坦', 'Jordan': '约旦', 'Lebanon': '黎巴嫩', 'Syria': '叙利亚', 'Egypt': '埃及', 'Madagascar': '马达加斯加', 'Comoros': '科摩罗', 'Gabon': '加蓬',
-				'Morocco': '摩洛哥', 'Algeria': '阿尔及利亚', 'Tunisia': '突尼斯', 'Libya': '利比亚', 'Yemen': '也门', 'Somalia': '索马里', 'Djibouti': '吉布提', 'Maldives': '马尔代夫', 'Sudan': '苏丹', 'Congo, Rep.': '刚果（金）', 'Congo, Dem. Rep.': '刚果（布）',
-				'South Africa': '南非', 'Nigeria': '尼日利亚', 'Kenya': '肯尼亚', 'Ethiopia': '埃塞俄比亚', 'Tanzania': '坦桑尼亚', 'Ghana': '加纳', 'Senegal': '塞内加尔', 'Cote d\'Ivoire': '科特迪瓦', 'Côte d\'Ivoire': '科特迪瓦', 'Ivory Coast': '科特迪瓦',
-				'Angola': '安哥拉', 'Mozambique': '莫桑比克', 'Zimbabwe': '津巴布韦', 'Zambia': '赞比亚', 'Botswana': '博茨瓦纳', 'Namibia': '纳米比亚', 'Mauritius': '毛里求斯', 'Seychelles': '塞舌尔'
-			};
-			return dict[s] || s;
+			const en2zh = (this.i18nDict && this.i18nDict.en2zh) || {};
+			const zh2en = (this.i18nDict && this.i18nDict.zh2en) || {};
+			if (this.globalLang === 'en') {
+				const hit = zh2en[s] || zh2en[s.toLowerCase ? s.toLowerCase() : s];
+				return hit || s;
+			}
+			const hit = en2zh[s] || en2zh[s.toLowerCase ? s.toLowerCase() : s];
+			if (hit) return hit;
+			const viaT = this.t(s);
+			return viaT || s;
 		},
 		translateCityToZh(val) {
 			if (!val) return '';
 			const s = String(val).trim();
-			const dict = {
-				'Abidjan': '阿比让'
-			};
-			return dict[s] || s;
+			const en2zh = (this.i18nDict && this.i18nDict.en2zh) || {};
+			const zh2en = (this.i18nDict && this.i18nDict.zh2en) || {};
+			if (this.globalLang === 'en') {
+				return zh2en[s] || zh2en[s.toLowerCase ? s.toLowerCase() : s] || s;
+			}
+			return en2zh[s] || en2zh[s.toLowerCase ? s.toLowerCase() : s] || this.t(s) || s;
 		},
 		translateEntityToZh(name) {
 			if (!name) return '';
 			const s = String(name).trim();
 			const lc = s.toLowerCase();
-			const dict = {
-				// 运营商（Owners）
-				'china mobile': '中国移动',
-				'china telecom': '中国电信',
-				'china unicom': '中国联通',
-				'china broadnet': '中国广电',
-				'ctg': '中国电信集团',
-				'telecom egypt': '埃及电信',
-				'etisalat': '阿联酋电信',
-				'du': '阿联酋电信du',
-				'ooredoo': '卡塔尔电信',
-				'bharti airtel': '巴蒂电信',
-				'airtel': '巴蒂电信',
-				'google': '谷歌',
-				'meta': 'Meta',
-				'facebook': 'Meta',
-				'microsoft': '微软',
-				'amazon': '亚马逊',
-				'ntt': '日本电信电话公司',
-				'kddi': '日本KDDI',
-				'softbank': '软银',
-				'telstra': '澳大利亚电信',
-				'spark': '新西兰电信',
-				'verizon': '威瑞森',
-				'at&t': '美国电话电报公司',
-				'lumen': '路曼科技',
-				'centurylink': '世纪互联',
-				'tata communications': '塔塔通信',
-				'orange': '法国电信',
-				'telefonica': '西班牙电信',
-				'vodafone': '沃达丰',
-				'bt': '英国电信',
-				'deutsche telekom': '德国电信',
-				'singtel': '新加坡电信',
-				'm1': '新加坡M1',
-				'starhub': '星和',
-				'pldt': '菲律宾长途电话公司',
-				'globe telecom': '菲律宾环球电信',
-				'jio': '印度信实Jio',
-				'reliance jio': '印度信实Jio',
-				'sri lanka telecom': '斯里兰卡电信',
-				'saudi telecom company': '沙特电信',
-				'stc': '沙特电信',
-				'telekom malaysia': '马来西亚电信',
-				'indosat': '印尼Indosat',
-				'telkom indonesia': '印尼电信',
-				'vodacom': '南非沃达康',
-				'mtn': '南非MTN',
-				'pccw': '电讯盈科',
-				'hkt': '香港电讯',
-				'hkbn': '香港宽频',
-				'bsnl': '印度国家电信',
-				'zain': '科威特Zain',
-				// 供应商（Suppliers）
-				'subcom': '昇康',
-				'nec': '日本电气',
-				'nokia': '诺基亚',
-				'alcatel submarine networks': '阿尔卡特海底网络',
-				'asn': '阿尔卡特海底网络',
-				'hmn tech': '亨通海洋',
-				'huawei marine': '华为海洋',
-				'prysmian': '普睿司曼',
-				'furukawa': '古河电工',
-				'hengtong': '亨通',
-				'ztt': '中天科技'
-			};
-			return dict[lc] || s;
+			const dictHit = (this.i18nDict && this.i18nDict.en2zh && (this.i18nDict.en2zh[s] || this.i18nDict.en2zh[lc]));
+			if (dictHit) return dictHit;
+			const viaT = this.t(s);
+			if (viaT && viaT !== s) return viaT;
+			const viaLowerT = this.t(lc);
+			if (viaLowerT && viaLowerT !== lc) return viaLowerT;
+			
+			return s;
 		},
 		translateEntities(val, lang = 'zh') {
 			if (val == null) return '-';
@@ -1591,7 +2055,7 @@ new Vue({
 		safeVal(val, placeholder = '暂无') {
 			if (val === 0) return 0;
 			const s = (val == null) ? '' : String(val).trim();
-			return s ? s : placeholder;
+			return s ? s : this.t(placeholder);
 		},
 		parseTimeMs(ts) {
 			if (!ts) return null;
@@ -1609,7 +2073,7 @@ new Vue({
 			const hour = Math.floor(totalSec / 3600) % 24;
 			const day = Math.floor(totalSec / 86400);
 			const pad = (n) => String(n).padStart(2, '0');
-			if (day > 0) return `${day}天 ${pad(hour)}:${pad(min)}:${pad(sec)}`;
+			if (day > 0) return `${day} ${this.t('天')} ${pad(hour)}:${pad(min)}:${pad(sec)}`;
 			return `${pad(hour)}:${pad(min)}:${pad(sec)}`;
 		},
 		liveDuration(f) {
@@ -1620,6 +2084,19 @@ new Vue({
 			const ms = Math.max(0, end - start);
 			return this.formatDuration(ms);
 		},
+		// 故障结束时间展示：
+		// - 若无结束时间或为空，统一展示「故障还未结束」并走 t() 保证翻译；
+		// - 若接口已返回占位（中/英），也强制走 t()，避免紧凑列表仍显示中文；
+		// - 用于紧凑/大屏、2D/3D/瓦片、聚焦/非聚焦、实况九模式的统一显示。
+		faultEndText(f) {
+			const placeholderZh = '故障还未结束';
+			const placeholderEn = 'Fault not ended yet';
+			if (!f) return this.t(placeholderZh);
+			const endRaw = f.end != null ? String(f.end).trim() : '';
+			if (!endRaw) return this.t(placeholderZh);
+			if (endRaw === placeholderZh || endRaw === placeholderEn) return this.t(placeholderZh);
+			return endRaw;
+		},
 		faultSeverityWeight(f) {
 			const major = f && f.isMajor && String(f.isMajor).toLowerCase() !== '否';
 			const important = f && (String(f.level || f.importance || '').match(/重|important|high/i));
@@ -1629,8 +2106,8 @@ new Vue({
 		},
 		faultSeverityLabel(f) {
 			const w = this.faultSeverityWeight(f);
-			if (w === 3) return '重大';
-			if (w === 2) return '重要';
+			if (w === 3) return this.t('重大');
+			if (w === 2) return this.t('重要');
 			return '';
 		},
 		faultSeverityClass(f) {
@@ -1640,8 +2117,28 @@ new Vue({
 			return '';
 		},
 		faultTitle(f) {
-			if (!f) return '故障';
-			return this.safeVal(f.cableName || f.name || '故障');
+			if (!f) return this.t('故障');
+			return this.safeVal(f.cableName || f.name) || this.t('故障');
+		},
+		// 故障聚焦标题统一为“海缆故障 N”，按当前故障在展示列表中的序号推断
+		faultFocusLabel(f = null) {
+			const list = Array.isArray(this.displayFaults) ? this.displayFaults : [];
+			const sameFault = (a, b) => {
+				if (!a || !b) return false;
+				const ida = String(a.faultId || a.id || '').trim();
+				const idb = String(b.faultId || b.id || '').trim();
+				if (ida && idb && ida === idb) return true;
+				const nameA = this.normalizeText(a.cableName || a.name || '');
+				const nameB = this.normalizeText(b.cableName || b.name || '');
+				return !!(nameA && nameB && nameA === nameB);
+			};
+			const idxExplicit = (this.selectedFaultIndex != null && this.selectedFaultIndex >= 0) ? this.selectedFaultIndex : -1;
+			if (idxExplicit >= 0) return `${this.t('海缆故障')} ${idxExplicit + 1}`;
+			if (f) {
+				const found = list.findIndex(item => sameFault(item, f));
+				if (found >= 0) return `${this.t('海缆故障')} ${found + 1}`;
+			}
+			return this.t('海缆故障');
 		},
 		// 故障左右布局选择
 		selectFault(f, i) {
@@ -1653,6 +2150,9 @@ new Vue({
 			this.faultEditState.picking = false;
 			const coordStr = f ? (f.pointCoord1 || f.pointCoord2 || f.pointCoord3 || '') : '';
 			this.setFaultPointMarkerFromCoord(this.displayCoordFromStr(coordStr));
+			if (f && !this.faultHasLocation(f)) {
+				this.showMapCenterToast(this.t('当前故障暂无定位信息，定位就绪后将自动展示定位点'), 'warning');
+			}
 			this.scrollFaultIntoView(i);
 			// 点击故障后尝试在地图上聚焦对应海缆
 			this.$nextTick(() => this.focusFaultOnMap(f));
@@ -1689,12 +2189,47 @@ new Vue({
 			scored.sort((a, b) => b.score - a.score);
 			return scored[0].l;
 		},
-		focusFaultOnMap(f) {
+		async focusFaultOnMap(f) {
 			try {
-				if (!f || !this.myChart) return;
+					// 进入故障聚焦前保存显示状态，退出时恢复
+					this.pushDisplayState('focus:fault');
+					this.startFocusLoading('故障聚焦');
+					await this.uiFlush();
+				const isTile = (!this.isGlobe && this.mapVersion === 'tiles');
+				if (!f || (!isTile && !this.myChart)) return;
+				// 聚焦模式自动关闭“仅显示故障”，避免遗漏其他叠加内容
+				this.faultOnlyOnMap = false;
 				this.showLandings = true;
-				this.showLandingLabels = true;
+				this.showFaultCablesOnMap = false;
+				this.selectedFault = f;
+				if (Array.isArray(this.displayFaults)) {
+					const idx = this.displayFaults.findIndex(it => this.faultKey(it) === this.faultKey(f));
+					this.selectedFaultIndex = idx >= 0 ? idx : null;
+				}
+				this.showLandingLabels = false;
+				this._geoUserLocked = false;
+				this._geoUserView = { center: null, zoom: null };
+				this._tileUserPanned = false;
+				this._tilePickCenterKey = null;
+				// 调试：故障聚焦入口（2D/3D、地图版本、已解析故障线数）
+				this.focusDebug('故障聚焦开始', { isGlobe: this.isGlobe, mapVersion: this.mapVersion, faultId: f.faultId || '', cableName: f.cableName || f.name || '', linesBeforeResolve: Array.isArray(this.cableLines) ? this.cableLines.length : 0 });
 				const lines = this.resolveFaultLines(f) || [];
+				// 瓦片模式若无涉及海缆，清空叠加并提示
+				if (isTile && (!lines || !lines.length)) {
+					this.focusMode = 'none';
+					this.focusedFaultLineIds = [];
+					this.focusedCableId = null;
+					this.focusedFeatureId = null;
+					this.focusedLanding = null;
+					if (this.tileViewer && this.tileViewer.setOverlayData) this.tileViewer.setOverlayData({ lines: [], points: [] });
+					this.destroyTileLegend();
+					// 地图容器中央科技风提示，驻留 4.6s
+					this.showTileCenterToast(this.t('该故障未提供涉及海缆信息，已清空地图'), 'warning', 4600);
+					this.mapLoading = false;
+					this.mapLoadingText = '';
+					this.finishFocusLoading();
+					return;
+				}
 				this.focusMode = 'fault';
 				this.focusedFaultLineIds = lines.map(l => l.feature_id || l.id || l.name).filter(Boolean);
 				this.focusedCableId = null;
@@ -1702,7 +2237,7 @@ new Vue({
 				this.focusedLanding = null;
 				this.landingTooltip.selectedCableIds = [];
 				let targetCoord = [120, 20];
-				let targetZoom = this.geoZoom || 1.8;
+				let targetZoom = this.geoZoom || (isTile ? 2.6 : 1.8);
 				const allCoords = [];
 				const collectSegs = (l) => {
 					const segs = this.isGlobe
@@ -1711,9 +2246,11 @@ new Vue({
 					segs.forEach(seg => { if (Array.isArray(seg)) allCoords.push(...seg); });
 				};
 				lines.forEach(collectSegs);
-				if (allCoords.length) {
-					const xs = allCoords.map(c => Number(c[0])).filter(isFinite);
-					const ys = allCoords.map(c => Number(c[1])).filter(isFinite);
+				// 2D 需按当前底图版本转换经度（亚太中心/标准版），否则居中会偏移
+				const coordsForBounds = this.isGlobe ? allCoords : allCoords.map(c => this.mapCoordForDisplay(c)).filter(Boolean);
+				if (coordsForBounds.length) {
+					const xs = coordsForBounds.map(c => Number(c[0])).filter(isFinite);
+					const ys = coordsForBounds.map(c => Number(c[1])).filter(isFinite);
 					if (xs.length && ys.length) {
 						const minX = Math.min(...xs), maxX = Math.max(...xs);
 						const minY = Math.min(...ys), maxY = Math.max(...ys);
@@ -1723,20 +2260,34 @@ new Vue({
 						const spanY = Math.max(1, Math.abs(maxY - minY));
 						const span = Math.max(spanX, spanY);
 						targetCoord = [cx, cy];
-						targetZoom = span > 120 ? 1.8 : span > 60 ? 2.2 : span > 20 ? 2.6 : 3.2;
+						if (isTile) {
+							targetZoom = span > 220 ? 2.0 : span > 140 ? 2.3 : span > 90 ? 2.6 : span > 50 ? 3.0 : span > 30 ? 3.4 : 3.8;
+						} else {
+							targetZoom = span > 120 ? 1.8 : span > 60 ? 2.2 : span > 20 ? 2.6 : 3.2;
+						}
+						this.focusDebug('故障聚焦包络', { minX, maxX, minY, maxY, cx, cy, spanX, spanY, targetZoom });
 					}
 				}
 				// 若无故障定位坐标，依旧进入聚焦模式并回到亚太中心
 				this.focusTargetCoord = targetCoord;
+				this.pendingFocusRecenter3D = this.isGlobe;
 				if (this.isGlobe) {
 					try { this.myChart.setOption({ globe: { viewControl: { targetCoord } } }); } catch (e) { /* noop */ }
 				} else {
 					this.geoZoom = targetZoom;
-					this.myChart.setOption({ geo: { center: targetCoord, zoom: this.geoZoom } });
+					if (isTile && this.tileViewer && this.tileViewer.setCenter) {
+						this.tileViewer.setCenter(targetCoord);
+							const targetZ = this.tileViewer.opts ? Math.max(this.tileViewer.opts.minZoom || 1, Math.min(this.tileViewer.opts.maxZoom || 7, targetZoom)) : targetZoom;
+						if (this.tileViewer.setZoom) this.tileViewer.setZoom(targetZ);
+					} else if (this.myChart) {
+						this.myChart.setOption({ geo: { center: targetCoord, zoom: this.geoZoom } });
+						this.focusDebug('故障聚焦应用(2D)', { center: targetCoord, zoom: this.geoZoom });
+					}
 				}
 				this.updateChart();
 				this.statesToSlider();
 			} catch (e) { console.warn('故障聚焦失败', e); }
+			finally { this.finishFocusLoading(); }
 		},
 		scrollFaultIntoView(i) {
 			this.$nextTick(() => {
@@ -1909,6 +2460,36 @@ new Vue({
 			if (lang === 'zh') return this.translateNameToZh(raw);
 			return this.normalizeText(raw);
 		},
+		tWithLang(text, lang) {
+			const target = (lang === 'en') ? 'en' : 'zh';
+			const s = String(text == null ? '' : text);
+			if (!s) return '';
+			const dict = this.i18nDict || {};
+			if (target === 'en') {
+				const hit = dict.zh2en && dict.zh2en[s];
+				if (hit) return hit;
+				if (/[A-Za-z]/.test(s)) return s;
+				const mapped = this.translateContent(s, 'en');
+				return mapped || s;
+			}
+			const hit = dict.en2zh && dict.en2zh[s];
+			if (hit) return hit;
+			const mapped = this.translateContent(s, 'zh');
+			if (mapped) return mapped;
+			return this.translateEntityToZh ? this.translateEntityToZh(s) : s;
+		},
+		unitLabel(text, lang) {
+			return this.tWithLang(text, lang || this.globalLang);
+		},
+		displayCountryLabel(val, lang) {
+			const target = (lang === 'en') ? 'en' : 'zh';
+			const normalized = this.normalizeText(val || '');
+			if (!normalized || normalized === '-' || normalized === '未标注' || normalized === 'Unknown') {
+				return this.tWithLang('未标注', lang || this.globalLang);
+			}
+			if (target === 'en') return normalized;
+			return this.translateCountryToZh(normalized);
+		},
 		translateContent(val, lang = 'zh') {
 			if (val == null) return '';
 			let s = String(val).trim();
@@ -1977,17 +2558,113 @@ new Vue({
 			}
 			this.focusLanding(lp);
 		},
+		async ensureI18nDictLoaded() {
+			if (this._i18nLoadedOnce) return;
+			await this.loadI18nDict();
+			if (this.i18nDict && (this.i18nDict.zh2en || this.i18nDict.en2zh)) {
+				this._i18nLoadedOnce = true;
+			}
+		},
 		getItemLang(type, id) {
 			const pref = this.langPref && this.langPref[type];
 			const key = String(id || '').trim();
-			return (pref && pref[key]) || 'zh';
+			const globalLang = this.listLangGlobal || 'zh';
+			return (pref && pref[key]) || globalLang;
 		},
-		toggleItemLang(type, id) {
+		async toggleItemLang(type, id) {
 			const key = String(id || '').trim();
 			if (!key) return;
+			await this.ensureI18nDictLoaded();
 			if (!this.langPref[type]) this.$set(this.langPref, type, {});
 			const cur = this.langPref[type][key] || 'zh';
 			this.$set(this.langPref[type], key, cur === 'zh' ? 'en' : 'zh');
+			try { if (this.$forceUpdate) this.$forceUpdate(); } catch (e) { /* noop */ }
+			this.refreshRealtimeMessageLang && this.refreshRealtimeMessageLang();
+			this.updateChart();
+		},
+		// 全局语言切换：同步列表语言偏好，并在普通 2D 下切换中/英文底图
+		async setGlobalLang(lang) {
+			const target = (lang === 'en') ? 'en' : 'zh';
+			if (this.globalLang === target) return;
+			// 确保词典已加载，避免切换后出现未翻译文案
+			await this.ensureI18nDictLoaded();
+			if (!this.langPref.cable) this.$set(this.langPref, 'cable', {});
+			if (!this.langPref.landing) this.$set(this.langPref, 'landing', {});
+			// 记录当前 2D 普通地图版本，方便往返语言时恢复
+			if (!this.isGlobe && this.mapVersion !== 'tiles') {
+				if (target === 'en') {
+					this._mapVersionZhBackup = this.mapVersion || this._mapVersionZhBackup || 'ap-zh';
+				} else {
+					this._mapVersionEnBackup = this.mapVersion || this._mapVersionEnBackup || 'std-en';
+				}
+			}
+			this.globalLang = target;
+			this.listLangGlobal = target;
+			this.applyGlobalLangToLists(target);
+			this.applyLangMapVersion();
+			this.refreshRealtimeMessageLang && this.refreshRealtimeMessageLang();
+			// 强制刷新以确保所有 t()/tLabel 文案在切换语言后即时重绘
+			try { if (this.$forceUpdate) this.$forceUpdate(); } catch (e) { /* noop */ }
+			this.updateChart();
+		},
+		// 将全局语言偏好同步到海缆/登陆站列表，保持切换一致
+		applyGlobalLangToLists(lang) {
+			const next = (lang === 'en') ? 'en' : 'zh';
+			const applyAll = (type, items) => {
+				(items || []).forEach(it => {
+					const key = String(it.id || it.feature_id || it.name || '').trim();
+					if (!key) return;
+					this.$set(this.langPref[type], key, next);
+				});
+			};
+			applyAll('cable', this.cableLines || []);
+			applyAll('landing', this.landingPoints || []);
+		},
+		// 语言切换时的地图底图联动：普通 2D 切到英文标准底图，中文恢复上次中文底图
+		applyLangMapVersion() {
+			if (this.isGlobe || this.mapVersion === 'tiles') return;
+			const zhFallback = this._mapVersionZhBackup || 'ap-zh';
+			const enFallback = this._mapVersionEnBackup || 'std-en';
+			const target = (this.globalLang === 'en') ? enFallback : zhFallback;
+			if (this.mapVersion !== target) {
+				this.mapVersionPrev = this.mapVersion;
+				this.mapVersion = target;
+				this.onMapVersionChange();
+			}
+		},
+		// 当前语言对应的普通 2D 底图版本（tiles 之外的首选）
+		preferred2DMapVersion() {
+			return (this.globalLang === 'en') ? (this._mapVersionEnBackup || 'std-en') : (this._mapVersionZhBackup || 'ap-zh');
+		},
+		// 加载 i18n 词典（json/i18n.json），于运行时进行系统文案翻译
+		async loadI18nDict() {
+			try {
+				const resp = await fetch('json/i18n.json?_=' + Date.now());
+				if (!resp || !resp.ok) return;
+				const data = await resp.json();
+				if (data && (data.zh2en || data.en2zh)) {
+					this.i18nDict = { zh2en: data.zh2en || {}, en2zh: data.en2zh || {} };
+				}
+			} catch (e) { /* 静默加载失败 */ }
+		},
+		// 文本翻译：根据 globalLang 使用词典，将中文或英文翻译为目标语言
+		t(text) {
+			try {
+				const s = String(text == null ? '' : text);
+				if (!s) return '';
+				if (this.globalLang === 'zh') return this.translateContent(s, 'zh');
+				// 英文：优先查词典 zh2en；若原文已是英文则直接返回，否则回退 translateContent
+				const dictHit = this.i18nDict && this.i18nDict.zh2en && this.i18nDict.zh2en[s];
+				if (dictHit) return dictHit;
+				// 若字符串包含英文字母，视为英文原文直接返回
+				if (/[A-Za-z]/.test(s)) return s;
+				return this.translateContent(s, 'en');
+			} catch (e) { return String(text || ''); }
+		},
+		// 切换单按钮：在 zh/en 之间切换全局语言
+		async toggleGlobalLang() {
+			const next = (this.globalLang === 'zh') ? 'en' : 'zh';
+			await this.setGlobalLang(next);
 		},
 		tLabel(key, type, id) {
 			const lang = this.getItemLang(type, id);
@@ -2008,8 +2685,12 @@ new Vue({
 		normalizeText(val) {
 			if (val == null) return '';
 			let s = String(val);
-			// 中文替换：所有“台湾”替换为“中国台湾省”
+			// 中文替换：防止“台湾”被重复替换为“中国中国台湾省省”
+			// - 先保护已规范过的“中国台湾/中国台湾省”，再替换剩余“台湾”
+			const twToken = '__TW__';
+			s = s.replace(/中国台湾省/g, twToken).replace(/中国台湾/g, twToken);
 			s = s.replace(/台湾/g, '中国台湾省');
+			s = s.replace(new RegExp(twToken, 'g'), '中国台湾省');
 			// 英文短语规范：包含 taiwan 或与 china/chian 组合时，统一翻译为“中国台湾省”
 			s = s.replace(/\b(taiwan\s*(china|chian)?|china\s*taiwan)\b/gi, '中国台湾省');
 			// 独立的 taiwan 也翻译为“中国台湾省”
@@ -2119,7 +2800,7 @@ new Vue({
 		},
 		closeModal() {
 			this.modal.show = false;
-		},
+		}, 
 		buildOwnershipMap() {
 			const map = new Map();
 			const globalList = (typeof cableData !== 'undefined' && Array.isArray(cableData))
@@ -2429,7 +3110,7 @@ new Vue({
 		},
 		// 生成 3D 重算结果：仅对跨太平洋线路进行球面连通并返回最小化结构
 		async compute3DRebuiltFromRaw() {
-			const res = await fetch(encodeURI('海缆数据/cable-geo_v3.json'));
+			const res = await fetch(encodeURI('seacable_data/cable-geo_v3.json'));
 			if (!res.ok) throw new Error(`加载海缆总表失败: HTTP ${res.status}`);
 			const json = await res.json();
 			const features = Array.isArray(json?.features) ? json.features : [];
@@ -2460,7 +3141,7 @@ new Vue({
 		async loadSaved3DGlobe() {
 			try {
 				// 与后端保存一致，使用无空格文件名以避免 404
-				const url = encodeURI('海缆数据/重构的数据/3d海缆数据.json');
+				const url = encodeURI('seacable_data/重构的数据/3d海缆数据.json');
 				const res = await fetch(url, { cache: 'no-store' });
 				if (!res.ok) return [];
 				const json = await res.json();
@@ -2680,6 +3361,29 @@ new Vue({
 					return merged;
 				}
 			}
+			// IAX 特殊处理：India Asia Xpress 名称存在分段，打点时需要聚合同名分段以避免断截
+			if (cableRaw.includes('india asia xpress') || cableRaw === 'iax' || cableRaw.includes(' iax')) {
+				const source = (Array.isArray(this.filteredCablesMap) && this.filteredCablesMap.length)
+					? this.filteredCablesMap
+					: (Array.isArray(this.cableLines) ? this.cableLines : []);
+				const parts = source.filter(l => {
+					const nm = this.normalizeText(l.name || '').toLowerCase();
+					return nm.includes('india asia xpress') || nm.includes(' iax') || nm === 'iax';
+				});
+				if (parts.length) {
+					const merged = { ...parts[0] };
+					const allCoords = [];
+					const allSegs = [];
+					parts.forEach(l => {
+						if (Array.isArray(l.coords)) allCoords.push(...l.coords);
+						const segs = (Array.isArray(l.segments) && l.segments.length) ? l.segments : this.splitLineSegments(l.coords || []);
+						if (Array.isArray(segs) && segs.length) allSegs.push(...segs);
+					});
+					merged.coords = allCoords;
+					merged.segments = allSegs;
+					return merged;
+				}
+			}
 			return (this.cableLines || []).find(l => {
 				const cands = [l.feature_id, l.id, l.name].map(v => this.normalizeText(v || '').toLowerCase());
 				return cands.includes(cableRaw);
@@ -2713,10 +3417,17 @@ new Vue({
 			});
 			return (lp && Array.isArray(lp.coords)) ? lp.coords : null;
 		},
-		// 基于线路节点图的路径测距：将海缆分段拆为图节点，投影鼠标/起点到最近段，随后跑 Dijkstra，限制最大离线偏移
+		// 基于线路节点图的路径测距（当前功能相关）：
+		// - 将海缆分段拆为图节点，分段内相邻点连边；
+		// - 将“鼠标/目标点”和“起点登陆站”分别正交投影到最近的一段上；
+		// - 端点近邻连通（connectKm 默认 15km；connectFallbackKm 默认 120km，首次求解失败时为端点批量补全连边）用于修复 SJC 等存在多段/分支时预览/打点无法跨段的问题；
+		// - Dijkstra 计算从起点到目标投影点的路径和距离；
+		// - 通过 maxOffsetKm（30/80km 两档）严格限制离线打点，确保仅在线路上打点。
 		computeDistanceFromStart(line, startCoord, targetCoord, opts = {}) {
-			const maxOffsetKm = opts.maxOffsetKm ?? 30;
-			const connectKm = opts.connectKm ?? 15; // 连接断裂分段的端点距离阈值
+			const maxOffsetKm = opts.maxOffsetKm ?? 30; // 投影到走线的最大离线距离阈值（km）
+			const connectKm = opts.connectKm ?? 15;      // 近邻端点“跨段连通”阈值（km）：SJC 典型相邻端点约 1.5km
+			const connectAllKmSmall = opts.connectAllKmSmall ?? 5;   // 全节点近邻连通的小阈值（km），优先用于分支在非端点处的汇合
+			const connectFallbackKm = opts.connectFallbackKm ?? 120; // 兜底：在更大范围内全节点连通（km），确保极端数据仍可连通
 			if (!line || !Array.isArray(startCoord) || !Array.isArray(targetCoord)) return null;
 			const rawSegments = (Array.isArray(line.segments) && line.segments.length)
 				? line.segments
@@ -2754,16 +3465,29 @@ new Vue({
 					addEdge(ids[i - 1], ids[i], this.distanceKm(seg[i - 1], seg[i]));
 				}
 			});
-			// 连接分段端点：端点距离在 connectKm 内视为同一交汇点
+			// 连接分段端点：端点距离在 connectKm 内视为同一交汇点；
+			// SJC 等分支在非端点处可能汇合，首次求解失败时将对所有节点做“近邻连通”兜底。
 			const endpoints = segNodeIds.flatMap(ids => (ids.length ? [ids[0], ids[ids.length - 1]] : []));
-			for (let i = 0; i < endpoints.length; i++) {
-				for (let j = i + 1; j < endpoints.length; j++) {
-					const a = endpoints[i];
-					const b = endpoints[j];
-					const d = this.distanceKm(nodes[a], nodes[b]);
-					if (d <= connectKm) addEdge(a, b, d);
+			const connectEndpointsWithin = (threshold) => {
+				for (let i = 0; i < endpoints.length; i++) {
+					for (let j = i + 1; j < endpoints.length; j++) {
+						const a = endpoints[i];
+						const b = endpoints[j];
+						const d = this.distanceKm(nodes[a], nodes[b]);
+						if (d <= threshold) addEdge(a, b, d);
+					}
 				}
-			}
+			};
+			const connectAllNodesWithin = (threshold) => {
+				const n = nodes.length;
+				for (let i = 0; i < n; i++) {
+					for (let j = i + 1; j < n; j++) {
+						const d = this.distanceKm(nodes[i], nodes[j]);
+						if (d <= threshold) addEdge(i, j, d);
+					}
+				}
+			};
+			connectEndpointsWithin(connectKm);
 			const project = (pt, a, b) => {
 				const apx = pt[0] - a[0];
 				const apy = pt[1] - a[1];
@@ -2817,55 +3541,67 @@ new Vue({
 			const startAttach = attachProjection(startCoord);
 			const targetAttach = attachProjection(targetCoord);
 			if (!startAttach || !targetAttach) return null;
-			const n = nodes.length;
-			const dist = new Array(n).fill(Infinity);
-			const prev = new Array(n).fill(-1);
-			const visited = new Array(n).fill(false);
-			dist[startAttach.nodeId] = 0;
-			for (let iter = 0; iter < n; iter++) {
-				let u = -1;
-				let best = Infinity;
-				for (let i = 0; i < n; i++) {
-					if (!visited[i] && dist[i] < best) {
-						best = dist[i];
-						u = i;
+			const solve = () => {
+				const n = nodes.length;
+				const dist = new Array(n).fill(Infinity);
+				const prev = new Array(n).fill(-1);
+				const visited = new Array(n).fill(false);
+				dist[startAttach.nodeId] = 0;
+				for (let iter = 0; iter < n; iter++) {
+					let u = -1;
+					let best = Infinity;
+					for (let i = 0; i < n; i++) {
+						if (!visited[i] && dist[i] < best) {
+							best = dist[i];
+							u = i;
+						}
 					}
+					if (u === -1 || u === targetAttach.nodeId) break;
+					visited[u] = true;
+					adj[u].forEach((w, v) => {
+						if (visited[v]) return;
+						const nd = dist[u] + w;
+						if (nd < dist[v]) {
+							dist[v] = nd;
+							prev[v] = u;
+						}
+					});
 				}
-				if (u === -1 || u === targetAttach.nodeId) break;
-				visited[u] = true;
-				adj[u].forEach((w, v) => {
-					if (visited[v]) return;
-					const nd = dist[u] + w;
-					if (nd < dist[v]) {
-						dist[v] = nd;
-						prev[v] = u;
-					}
-				});
-			}
-			if (!isFinite(dist[targetAttach.nodeId]) || dist[targetAttach.nodeId] === Infinity) return null;
-			const pathIds = [];
-			let cur = targetAttach.nodeId;
-			while (cur !== -1) {
-				pathIds.push(cur);
-				cur = prev[cur];
-				if (cur === startAttach.nodeId) {
+				if (!isFinite(dist[targetAttach.nodeId]) || dist[targetAttach.nodeId] === Infinity) return null;
+				const pathIds = [];
+				let cur = targetAttach.nodeId;
+				while (cur !== -1) {
 					pathIds.push(cur);
-					break;
+					cur = prev[cur];
+					if (cur === startAttach.nodeId) {
+						pathIds.push(cur);
+						break;
+					}
 				}
-			}
-			if (pathIds[pathIds.length - 1] !== startAttach.nodeId) {
-				pathIds.push(startAttach.nodeId);
-			}
-			pathIds.reverse();
-			const pathCoords = pathIds.map(id => nodes[id]);
-			return {
-				point: targetAttach.point,
-				distanceKm: dist[targetAttach.nodeId],
-				toLine: targetAttach.toLine,
-				path: pathCoords
+				if (pathIds[pathIds.length - 1] !== startAttach.nodeId) pathIds.push(startAttach.nodeId);
+				pathIds.reverse();
+				const pathCoords = pathIds.map(id => nodes[id]);
+				return {
+					point: targetAttach.point,
+					distanceKm: dist[targetAttach.nodeId],
+					toLine: targetAttach.toLine,
+					path: pathCoords
+				};
 			};
+			let result = solve();
+			// 若仅端点连通无法求得最短路径，先尝试小阈值全节点近邻连通，再尝试大范围兜底连通
+			if (!result && connectAllKmSmall > 0) {
+				connectAllNodesWithin(connectAllKmSmall);
+				result = solve();
+			}
+			if (!result && connectFallbackKm > connectKm) {
+				connectAllNodesWithin(connectFallbackKm);
+				result = solve();
+			}
+			return result;
 		},
-		// 包装测距：以登陆站为起点，严格限制离线偏移（30/80km），确保只在海缆走线上取点
+		// 包装测距（当前功能相关）：以登陆站为起点，严格限制离线偏移（30/80km），确保只在海缆走线上取点；
+		// 若 30km 阈值未命中，则放宽至 80km；两档均只用于“投影至走线”的容差控制，不允许离线打点。
 		computeDistanceAlongLine(line, coord, landingName = null) {
 			if (!line || !Array.isArray(coord) || coord.length < 2) return null;
 			const startName = landingName || this.faultEditState.landing || this.faultEditState.landingAlt || '';
@@ -2890,18 +3626,21 @@ new Vue({
 		// 进入打点模式：预加载必需数据，关闭干扰层，确保紧凑/大屏一致
 		async startFaultPointPick() {
 			if (!this.faultEditState.active) {
-				this.faultEditState.error = '请先点击编辑';
+				this.faultEditState.error = this.t('请先点击编辑');
 				return;
 			}
 			if (!this.faultEditState.cable) {
-				this.faultEditState.error = '请先选择涉及海缆';
+				this.faultEditState.error = this.t('请先选择涉及海缆');
 				return;
 			}
 			if (!this.faultEditState.landing) {
-				this.faultEditState.error = '请先选择登陆站';
+				this.faultEditState.error = this.t('请先选择登陆站');
 				return;
 			}
 			this.faultEditState.error = '';
+			this.faultPickPaletteVisible = false;
+			// 进入打点前保存显示状态，退出时恢复
+			this.pushDisplayState('pick:start');
 			// 打点会话开始时默认收起地图工具入口
 			this.mapDialOpen = false;
 			try { await this.ensureLandingPointsLoaded(); } catch (e) { /* noop */ }
@@ -2914,6 +3653,14 @@ new Vue({
 			this.faultPickConfirmVisible = false;
 			this.faultPickConfirmInfo = null;
 			this.faultPickPath = null;
+			// 重置编辑浮窗位移，保持居中，避免历史偏移影响体验
+			this.faultOverlayState = { dx: 0, dy: 0, dragging: false, startX: 0, startY: 0, startDx: 0, startDy: 0 };
+			// 重置打点右下浮窗的位置与尺寸（默认宽 320，自适应高）
+			this.faultPickPanelState = { dx: 0, dy: 0, w: 320, h: 0, dragging: false, startX: 0, startY: 0, startDx: 0, startDy: 0 };
+			this._tileUserPanned = false;
+			this._tilePickCenterKey = null;
+			this._geoUserLocked = false;
+			this._geoUserView = { center: null, zoom: null };
 			this.tipExtraCollapsed = true;
 			this.faultEditState.picking = true;
 			this.faultEditState.pickSession = true;
@@ -2949,7 +3696,7 @@ new Vue({
 					coord = [Number(params.value[0]), Number(params.value[1])];
 				}
 				if (!coord || !coord.length || !isFinite(coord[0]) || !isFinite(coord[1])) {
-					this.faultEditState.error = '未能获取坐标，请重试';
+					this.faultEditState.error = this.t('未能获取坐标，请重试');
 					return true;
 				}
 				const editLine = this.findCableByEditName(this.faultEditState.cable || '');
@@ -2958,7 +3705,7 @@ new Vue({
 				const hoverPayload = calcBefore ? {
 					coord: calcBefore.point,
 					distanceKm: calcBefore.distanceKm,
-					startName: this.faultEditState.landing || this.faultEditState.landingAlt || '起点',
+					startName: this.faultEditState.landing || this.faultEditState.landingAlt || this.t('起点'),
 					path: calcBefore.path,
 					toLine: calcBefore.toLine,
 					lineId: calcBefore.lineId || (editLine || {}).id
@@ -2972,22 +3719,41 @@ new Vue({
 				};
 				return true;
 			} catch (e) {
-				this.faultEditState.error = '打点失败，请重试';
+				this.faultEditState.error = this.t('打点失败，请重试');
 				return true;
 			}
+		},
+		// 瓦片地图打点入口：直接用瓦片坐标触发与 ECharts 相同的打点流程
+		handleTileMapPick(coord) {
+			if (!this.faultEditState.picking) return;
+			if (!Array.isArray(coord) || coord.length < 2 || !isFinite(coord[0]) || !isFinite(coord[1])) {
+				this.faultEditState.error = this.t('未能获取坐标，请重试');
+				return;
+			}
+			// 仅允许沿走线打点：applyFaultPointCoord 会将坐标投影至走线上并计算距离
+			this.applyFaultPointCoord(coord);
+			this.faultPickHover = this.faultPickLast;
+			this.faultPickConfirmVisible = true;
+			this.faultPickConfirmInfo = {
+				coord: this.faultEditState.pointCoord,
+				distance: this.faultEditState.distance
+			};
 		},
 		applyFaultPointCoord(coord) {
 			const line = this.findCableByEditName(this.faultEditState.cable || '');
 			if (!line) {
-				this.faultEditState.error = '未找到对应海缆，无法计算距离';
-				this.setFaultPointMarkerFromCoord(coord);
+				this.faultEditState.error = this.t('未找到对应海缆，无法计算距离');
+				this.setFaultPointMarkerFromCoord(null);
 				this.updateChart();
 				return;
 			}
 			const calc = this.computeDistanceAlongLine(line, coord, this.faultEditState.landing || '');
 			if (!calc) {
-				this.faultEditState.error = '无法计算距离，请重新打点';
-				this.setFaultPointMarkerFromCoord(coord);
+				this.faultEditState.error = this.t('请沿走线打点');
+				this.setFaultPointMarkerFromCoord(null);
+				this.faultPickHover = null;
+				this.faultPickLast = null;
+				this.faultPickPath = null;
 				this.updateChart();
 				return;
 			}
@@ -3002,7 +3768,7 @@ new Vue({
 			const payload = {
 				coord: calc.point,
 				distanceKm: calc.distanceKm,
-				startName: this.faultEditState.landing || this.faultEditState.landingAlt || '起点',
+				startName: this.faultEditState.landing || this.faultEditState.landingAlt || this.t('起点'),
 				path: calc.path,
 				toLine: calc.toLine,
 				lineId: line.id
@@ -3011,6 +3777,7 @@ new Vue({
 			if (!this.faultPickHover) this.faultPickHover = payload;
 			this.updateChart();
 		},
+		// 地图鼠标移动：打点时多源获取坐标，优先实时测距，失败则恢复上一次有效预览
 		// 地图鼠标移动：打点时多源获取坐标，优先实时测距，失败则恢复上一次有效预览
 		onMapMouseMove(params) {
 			try {
@@ -3071,9 +3838,10 @@ new Vue({
 			} catch (e) { this.faultPickHover = null; }
 		},
 		confirmFaultPickSave() {
+			// 修改：保存后不退出打点模式，保持 picking 为真，便于继续打点
 			this.faultPickConfirmVisible = false;
 			this.faultPickHover = null;
-			this.faultEditState.picking = false;
+			this.faultEditState.picking = true;
 			this.saveFaultEdit();
 		},
 		continueFaultPick() {
@@ -3084,14 +3852,38 @@ new Vue({
 				try { this.myChart.dispatchAction({ type: 'hideTip' }); } catch (e) { /* noop */ }
 			}
 		},
+		onGeoRoam() {
+			// 记录 2D 地图的用户视图，防止后续刷新时被自动回中心
+			try {
+				if (!this.myChart || typeof this.myChart.getOption !== 'function') return;
+				const opt = this.myChart.getOption() || {};
+				const g = Array.isArray(opt.geo) ? opt.geo[0] : (opt.geo || null);
+				const center = Array.isArray(g?.center) ? g.center.map(Number) : null;
+				const zoom = (g && g.zoom != null) ? Number(g.zoom) : null;
+				if (center) {
+					this._geoUserLocked = true;
+					this._geoUserView = { center, zoom: isFinite(zoom) ? zoom : this.geoZoom };
+					this.focusTargetCoord = center.slice();
+				}
+				if (isFinite(zoom)) this.geoZoom = zoom;
+				this.statesToSlider();
+			} catch (e) { /* noop */ }
+		},
 		exitFaultPointPick() {
 			this.faultPickConfirmVisible = false;
 			this.faultPickHover = null;
 			this.faultPickLast = null;
 			this.faultPickConfirmInfo = null;
 			this.faultPickPath = null;
+			this._tileUserPanned = false;
+			this._tilePickCenterKey = null;
+			this._geoUserLocked = false;
+			this.faultPickPaletteVisible = false;
 			this.faultEditState.picking = false;
 			this.faultEditState.pickSession = false;
+			// 结束拖拽，移除临时监听（如有），避免后续模式受影响
+			this.faultOverlayState.dragging = false;
+			this.faultPickPanelState.dragging = false;
 			this.faultEditState.error = '';
 			// 退出全屏与聚焦
 			if (this.isMapFullscreen) {
@@ -3099,6 +3891,8 @@ new Vue({
 				this.$nextTick(() => this.refreshMapAfterLayout());
 			}
 			if (this.focusMode !== 'none') this.clearFocus();
+			// 恢复进入打点前的显示状态
+			this.restoreDisplayState();
 			this.updateChart();
 		},
 		getFaultPointMarkerCoord() {
@@ -3124,17 +3918,33 @@ new Vue({
 		computeLiveDistanceForPick(mouseCoord) {
 			try {
 				if (!this.faultEditState.picking) return null;
-				const line = this.findCableByEditName(this.faultEditState.cable || '');
-				if (!line || !Array.isArray(line.coords)) return null;
+				const lineBase = this.findCableByEditName(this.faultEditState.cable || '');
+				if (!lineBase) return null;
+				// 合并同系统兄弟分支几何，避免仅单分支导致拐弯后预览失效（SJC/SJC2 等）
+				const siblings = this.collectCableSiblings(lineBase);
+				const mergeSegs = [];
+				const mergeCoords = [];
+				siblings.forEach(l => {
+					const d = (l.id && this.cableDetails[l.id]) ? this.cableDetails[l.id] : null;
+					const segs = (d && Array.isArray(d.segments) && d.segments.length)
+						? d.segments
+						: ((Array.isArray(l.segments) && l.segments.length) ? l.segments : this.splitLineSegments(l.coords || []));
+					if (Array.isArray(segs) && segs.length) segs.forEach(s => { if (Array.isArray(s) && s.length >= 2) mergeSegs.push(s); });
+					const coords = (d && Array.isArray(d.coords) && d.coords.length) ? d.coords : (l.coords || []);
+					if (Array.isArray(coords) && coords.length >= 2) mergeCoords.push(coords);
+				});
+				const line = { ...lineBase, segments: (mergeSegs.length ? mergeSegs : (Array.isArray(lineBase.segments) && lineBase.segments.length ? lineBase.segments : this.splitLineSegments(lineBase.coords || []))), coords: (mergeCoords.length ? mergeCoords.flat() : (lineBase.coords || [])) };
+				if (!Array.isArray(line.coords) && !Array.isArray(line.segments)) return null;
 				const startCoord = this.findLandingCoordByName(this.faultEditState.landing || '') || this.findLandingCoordByName(this.faultEditState.landing || this.faultEditState.landingAlt || '');
 				if (!startCoord) return null;
-				const res = this.computeDistanceFromStart(line, startCoord, mouseCoord, { maxOffsetKm: 30 })
-					|| this.computeDistanceFromStart(line, startCoord, mouseCoord, { maxOffsetKm: 80 });
+				// 两段式连通兜底：小阈值全节点近邻连通优先；仍失败再启用大阈值
+				const res = this.computeDistanceFromStart(line, startCoord, mouseCoord, { maxOffsetKm: 30, connectKm: 15, connectAllKmSmall: 5, connectFallbackKm: 80 })
+					|| this.computeDistanceFromStart(line, startCoord, mouseCoord, { maxOffsetKm: 80, connectKm: 15, connectAllKmSmall: 5, connectFallbackKm: 80 });
 				if (!res || !isFinite(res.toLine)) return null;
 				return {
 					coord: res.point,
 					distanceKm: res.distanceKm,
-					startName: this.faultEditState.landing || this.faultEditState.landingAlt || '起点',
+					startName: this.faultEditState.landing || this.faultEditState.landingAlt || this.t('起点'),
 					mouseCoord,
 					path: res.path,
 					toLine: res.toLine,
@@ -3142,11 +3952,54 @@ new Vue({
 				};
 			} catch (e) { return null; }
 		},
+		// 收集与指定海缆同属一个系统的兄弟分支（id/feature/name 归一）：
+		// 返回唯一化后的分支列表，用于构建统一的打点/测距几何源。
+		collectCableSiblings(base) {
+			try {
+				if (!base) return [];
+				const norm = v => String(v || '').trim().toLowerCase();
+				const keyId = norm(base.id);
+				const keyFeat = norm(base.feature_id);
+				const keyName = norm(this.normalizeText(base.name || '')) || norm(base.name);
+				const all = [...(this.withMetrics || []), ...(this.cableLines || []), ...(Array.isArray(this.filteredCablesMap) ? this.filteredCablesMap : [])];
+				const hits = all.filter(l => {
+					const a = norm(l.id);
+					const b = norm(l.feature_id);
+					const c = norm(this.normalizeText(l.name || '')) || norm(l.name);
+					return (keyId && a === keyId) || (keyFeat && b === keyFeat) || (keyName && c === keyName);
+				});
+				const seen = new Set();
+				const uniq = [];
+				hits.forEach(l => {
+					const segs = (Array.isArray(l.segments) && l.segments.length) ? l.segments : this.splitLineSegments(l.coords || []);
+					(segs || []).forEach(seg => {
+						const start = Array.isArray(seg) && seg.length ? seg[0] : [];
+						const end = Array.isArray(seg) && seg.length ? seg[seg.length - 1] : [];
+						const sig = `${norm(l.id || l.feature_id || l.name)}|${start?.[0]},${start?.[1]}|${end?.[0]},${end?.[1]}|${seg.length}`;
+						if (sig && !seen.has(sig)) { seen.add(sig); uniq.push({ ...l, segments: [seg] }); }
+					});
+					if (!Array.isArray(l.segments) && (!Array.isArray(l.coords) || !l.coords.length)) {
+						const globeSegs = (Array.isArray(l.segments_globe) && l.segments_globe.length) ? l.segments_globe : (Array.isArray(l.coords_globe) ? [l.coords_globe] : []);
+						(globeSegs || []).forEach(seg => {
+							const projected = (Array.isArray(seg) ? seg.map(c => this.mapCoordForDisplay(c)).filter(Boolean) : []);
+							const sliced = this.splitLineSegments(projected) || [];
+							(sliced || []).forEach(part => {
+								const start = Array.isArray(part) && part.length ? part[0] : [];
+								const end = Array.isArray(part) && part.length ? part[part.length - 1] : [];
+								const sig = `${norm(l.id || l.feature_id || l.name)}|${start?.[0]},${start?.[1]}|${end?.[0]},${end?.[1]}|${part.length}`;
+								if (sig && !seen.has(sig)) { seen.add(sig); uniq.push({ ...l, segments: [part] }); }
+							});
+						});
+					}
+				});
+				return uniq.length ? uniq : [base];
+			} catch (e) { return [base]; }
+		},
 		async ensureCableDetail(id) {
 			if (!id) return null;
 			if (this.cableDetails[id]) return this.cableDetails[id];
 			try {
-				const url = encodeURI(`海缆数据/cablesub/${id}.json`);
+				const url = encodeURI(`seacable_data/cablesub/${id}.json`);
 				const res = await fetch(url);
 				if (!res.ok) throw new Error(`HTTP ${res.status}`);
 				const json = await res.json();
@@ -3181,18 +4034,18 @@ new Vue({
 				if (!this.faultEditState.picking || !this.faultPickHover) return '';
 				const src = this.faultPickHover;
 				const dist = src.distanceKm != null ? Number(src.distanceKm).toFixed(2) : '-';
-				const name = src.startName || '起点';
+				const name = src.startName || this.t('起点');
 				const coord = Array.isArray(src.coord || src.value) ? (src.coord || src.value) : [];
 				const lon = isFinite(coord[0]) ? Number(coord[0]).toFixed(4) : '-';
 				const lat = isFinite(coord[1]) ? Number(coord[1]).toFixed(4) : '-';
 				return `<div class="live-distance" data-section="live-distance" style="position:relative; border:1px solid #00e5ff; box-shadow:0 0 14px rgba(0,229,255,0.48); border-radius:10px; padding:10px 12px; margin-bottom:10px; background:linear-gradient(135deg, rgba(0,229,255,0.14), rgba(0,229,255,0.03));">
 					<div class="ld-header" style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; font-weight:800; color:#9ce1ff; letter-spacing:0.5px;">
-						<span class="title">测距概览</span>
+						<span class="title">${this.t('测距概览')}</span>
 					</div>
 					<div class="ld-body">
-						<div class="row"><div class="key">实时距离</div><div class="val" style="color:#00e5ff;font-weight:bold;">${dist} km</div></div>
-						<div class="row"><div class="key">涉及登陆站（起点）</div><div class="val">${name}</div></div>
-						<div class="row"><div class="key">经纬度</div><div class="val">Lon ${lon}, Lat ${lat}</div></div>
+						<div class="row"><div class="key">${this.t('实时距离')}</div><div class="val" style="color:#00e5ff;font-weight:bold;">${dist} km</div></div>
+						<div class="row"><div class="key">${this.t('涉及登陆站（起点）')}</div><div class="val">${name}</div></div>
+						<div class="row"><div class="key">${this.t('经纬度')}</div><div class="val">Lon ${lon}, Lat ${lat}</div></div>
 					</div>
 				</div>`;
 			};
@@ -3211,7 +4064,8 @@ new Vue({
 				const continentText = this.displayContinents(contVal) || this.displayMacroRegion(contVal) || '-';
 				const directionText = this.displayDirection(line.direction || detail.direction);
 				const chips = landings.map(lp => {
-					const ctry = this.translateCountryToZh(this.normalizeText(lp.country || lp.nation || lp.country_name || '-'));
+					const langPref = this.getItemLang('landing', lp.id || lp.name || '');
+					const ctry = this.displayCountryLabel(lp.country || lp.nation || lp.country_name || '-', langPref);
 					const name = this.normalizeText(lp.name || '');
 					const safeName = name.replace(/\"/g, '&quot;').replace(/"/g, '&quot;');
 					const idAttr = lp.id ? ` data-id="${lp.id}"` : '';
@@ -3221,20 +4075,22 @@ new Vue({
 				const color = this.ownershipColor(line.ownership || '非权益');
 				const typePillStyle = this.styleStr(this.typeThemeStyle('cable'));
 				const ownPillStyle = this.styleStr(this.pillThemeStyle('cable', line));
+				const ownLabel = line.ownership ? this.t(line.ownership) : '';
 				const chipWrapCls = `chips scrollable ${count > 4 ? 'collapsed' : ''}`;
 				const live = renderLiveDistance();
+				const lineName = this.normalizeText(line.name || this.t('海缆'));
 				const head = `<div class="map-tip"><div class="title">`
-					+ `<span class=\"pill\" style=\"${typePillStyle}\">海缆</span>`
-					+ `${line.name || '海缆'}${line.ownership ? `<span class=\"pill\" style=\"${ownPillStyle}\">${line.ownership}</span>` : ''}</div>`
+					+ `<span class=\"pill\" style=\"${typePillStyle}\">${this.t('海缆')}</span>`
+					+ `${lineName}${ownLabel ? `<span class=\"pill\" style=\"${ownPillStyle}\">${ownLabel}</span>` : ''}</div>`
 					+ (live || '');
-				const extra = `<div class="row"><div class="key">商用年</div><div class="val">${detail.rfs_year || '-'}</div></div>`
-					+ `<div class="row"><div class="key">长度</div><div class="val">${detail.length || '-'}</div></div>`
-					+ `<div class="row"><div class="key">局向</div><div class="val">${directionText}</div></div>`
-					+ `<div class="row"><div class="key">洲别</div><div class="val">${continentText}</div></div>`
-					+ `<div class="row"><div class="key">海缆经过点</div><div class="val">${count} 个</div></div>`
+				const extra = `<div class="row"><div class="key">${this.t('商用年')}</div><div class="val">${detail.rfs_year || '-'}</div></div>`
+					+ `<div class="row"><div class="key">${this.t('长度')}</div><div class="val">${detail.length || '-'}</div></div>`
+					+ `<div class="row"><div class="key">${this.t('局向')}</div><div class="val">${directionText}</div></div>`
+					+ `<div class="row"><div class="key">${this.t('洲别')}</div><div class="val">${continentText}</div></div>`
+					+ `<div class="row"><div class="key">${this.t('海缆经过点')}</div><div class="val">${count} ${this.t('个')}</div></div>`
 					+ (chips ? `<div class="${chipWrapCls}">${chips}</div>` : '')
-					+ (count > 4 ? `<div class="more" data-action="expand-chip-list">还有 ${count - 4} 个…</div>` : '')
-					+ (needFetch ? `<div class="loading">详情加载中…</div>` : '');
+					+ (count > 4 ? `<div class="more" data-action="expand-chip-list">${this.t('还有')} ${count - 4} ${this.t('个…')}</div>` : '')
+					+ (needFetch ? `<div class="loading">${this.t('详情加载中…')}</div>` : '');
 				return head + wrapExtra(extra) + `</div>`;
 			}
 			if (p.seriesType === 'scatter' || p.seriesType === 'effectScatter' || p.seriesType === 'scatter3D') {
@@ -3253,14 +4109,15 @@ new Vue({
                                     <input type="checkbox" ${checked ? 'checked' : ''} data-action="toggle-cable-select"${idAttr} data-name="${safeName}">
                                     <span class="name">${safeName}</span>
                                 </label>
-                                <span class="meta">${cb.rfs_year || '-'}${cb.is_planned ? ' · 规划中' : ''}</span>
+								<span class="meta">${cb.rfs_year || '-'}${cb.is_planned ? ` · ${this.t('规划中')}` : ''}</span>
                             </div>`;
 				}).join('');
 				const coord = Array.isArray(p.value) ? p.value : lp.coords || [];
 				const lon = isFinite(coord[0]) ? Number(coord[0]).toFixed(2) : '-';
 				const lat = isFinite(coord[1]) ? Number(coord[1]).toFixed(2) : '-';
 				const count = (detail.cables && detail.cables.length) || (lp.cables && lp.cables.length) || 0;
-				const country = this.translateCountryToZh(this.normalizeText(lp.country || detail.country || detail.国家 || detail.COUNTRY || detail.Country));
+				const langPref = this.getItemLang('landing', lp.id || lp.name || '');
+				const country = this.displayCountryLabel(lp.country || detail.country || detail.国家 || detail.COUNTRY || detail.Country, langPref);
 				const contVal = lp.continent || detail.continent || lp.continentMacro || detail.continentMacro || '';
 				const continentText = this.displayContinents(contVal) || this.displayMacroRegion(contVal) || '-';
 				const directionText = this.displayDirection(lp.direction || detail.direction);
@@ -3273,8 +4130,8 @@ new Vue({
 				const chipWrapCls2 = `chips scrollable ${count > 4 && !expanded ? 'collapsed' : ''}`;
 				if (!isLanding) {
 					// 非登陆站（如海缆路径节点）的散点
-					return `<div class="map-tip"><div class="title">海缆经过点</div>`
-						+ `<div class="row"><div class="key">经纬度</div><div class="val">Lon ${lon}, Lat ${lat}</div></div>`
+					return `<div class="map-tip"><div class="title">${this.t('海缆经过点')}</div>`
+						+ `<div class="row"><div class="key">${this.t('经纬度')}</div><div class="val">Lon ${lon}, Lat ${lat}</div></div>`
 						+ `</div>`;
 				}
 				const titleName = this.displayLandingName(lp);
@@ -3288,23 +4145,23 @@ new Vue({
 				const tipAttrStr = tipAttrs.length ? ` ${tipAttrs.join(' ')}` : '';
 				const live = renderLiveDistance();
 				const head = `<div class="map-tip"${tipAttrStr}><div class="title">`
-					+ `<span class=\"pill\" style=\"${typePillStyle}\">登陆站</span>`
+					+ `<span class=\"pill\" style=\"${typePillStyle}\">${this.t('登陆站')}</span>`
 					+ `${titleName}${country ? `<span class=\"pill\">${country}</span>` : ''}`
-					+ `${ownership ? `<span class=\"pill\" style=\"${ownPillStyle}\">${ownership}</span>` : ''}`
+					+ `${ownership ? `<span class=\"pill\" style=\"${ownPillStyle}\">${this.t(ownership)}</span>` : ''}`
 					+ `</div>`
 					+ (live || '');
-				const extra = `<div class="row"><div class="key">编号</div><div class="val">${idText}</div></div>`
-					+ `<div class="row"><div class="key">是否待定</div><div class="val">${isTbd}</div></div>`
-					+ `<div class="row"><div class="key">经纬度</div><div class="val">Lon ${lon}, Lat ${lat}</div></div>`
-					+ `<div class="row"><div class="key">局向</div><div class="val">${directionText}</div></div>`
-					+ `<div class="row"><div class="key">洲别</div><div class="val">${continentText}</div></div>`
-					+ `<div class="row"><div class="key">关联海缆</div><div class="val">${count} 条`
-					+ `<button class="inline-btn" data-action="select-all-associated"${tipAttrStr} style="margin-left:8px;">全选</button>`
-					+ `<button class="inline-btn" data-action="select-none-associated"${tipAttrStr} style="margin-left:8px;">全不选</button>`
+				const extra = `<div class="row"><div class="key">${this.t('编号')}</div><div class="val">${idText}</div></div>`
+					+ `<div class="row"><div class="key">${this.t('是否待定')}</div><div class="val">${isTbd}</div></div>`
+					+ `<div class="row"><div class="key">${this.t('经纬度')}</div><div class="val">Lon ${lon}, Lat ${lat}</div></div>`
+					+ `<div class="row"><div class="key">${this.t('局向')}</div><div class="val">${directionText}</div></div>`
+					+ `<div class="row"><div class="key">${this.t('洲别')}</div><div class="val">${continentText}</div></div>`
+					+ `<div class="row"><div class="key">${this.t('关联海缆')}</div><div class="val">${count} ${this.t('条')}`
+					+ `<button class="inline-btn" data-action="select-all-associated"${tipAttrStr} style="margin-left:8px;">${this.t('全选')}</button>`
+					+ `<button class="inline-btn" data-action="select-none-associated"${tipAttrStr} style="margin-left:8px;">${this.t('全不选')}</button>`
 					+ `</div></div>`
 					+ (chips ? `<div class="${chipWrapCls2}">${chips}</div>` : '')
-					+ (count > 4 && !expanded ? `<div class="more" data-action="expand-chip-list" data-landing-id="${landingIdStr}">还有 ${count - 4} 条…</div>` : '')
-					+ (needFetch ? `<div class="loading">详情加载中…</div>` : '');
+					+ (count > 4 && !expanded ? `<div class="more" data-action="expand-chip-list" data-landing-id="${landingIdStr}">${this.t('还有')} ${count - 4} ${this.t('条…')}</div>` : '')
+					+ (needFetch ? `<div class="loading">${this.t('详情加载中…')}</div>` : '');
 				return head + wrapExtra(extra) + `</div>`;
 			}
 			return `<div class="map-tip"><div class="title">${p.name || ''}</div></div>`;
@@ -3411,6 +4268,7 @@ new Vue({
 			const list = Array.isArray(this.landingPoints) ? this.landingPoints : [];
 			const nameIndex = new Map();
 			list.forEach(p => { const k = this.formatLandingName(p.name).toLowerCase(); if (k) nameIndex.set(k, p); });
+			// 新增：故障定位点全局放大显示（symbolSize/字体），保证各模式下更显眼
 			return entries
 				.filter(item => item.landing)
 				.map(item => {
@@ -3424,19 +4282,26 @@ new Vue({
 						lpData: match,
 						isFaultLocation: true,
 						distance: item.distance,
-						itemStyle: { color: '#ff9900' },
-						symbolSize: 12,
+						itemStyle: { color: '#ff7fb3' },
+						symbolSize: 16,
 						label: {
 							show: true,
 							position: 'right',
-							color: '#ff9900',
+							color: '#ff7fb3',
 							fontWeight: 'bold',
+							fontSize: 16,
 							formatter: () => item.distance ? `${match.name || item.landing} ${item.distance}` : (match.name || item.landing)
 						}
 					};
 				})
 				.filter(Boolean);
 		},
+			// 故障定位标签：复用 2D 逻辑（带距离）供瓦片/3D 共享
+			formatFaultLocationLabel(point) {
+				if (!point) return '';
+				const baseName = point.lpData ? this.displayLandingName(point.lpData) : (point.name || '');
+				return point.distance ? `${baseName} ${point.distance}` : baseName;
+			},
 		buildAllFaultLocationPoints() {
 			const list = [];
 			(this.displayFaults || []).forEach(f => {
@@ -3746,6 +4611,11 @@ new Vue({
 		stopBigScreenLiveMode() {
 			this.stopLiveScenario('big-screen');
 		},
+		// Speed Dial 旁的快捷关闭实况
+		stopLiveScenarioQuick() {
+			if (this.liveScenarioMode === 'pc') return this.stopPcLiveMode();
+			if (this.liveScenarioMode === 'big-screen') return this.stopBigScreenLiveMode();
+		},
 		// 故障面板快捷入口：根据当前布局切换对应实况模式（紧凑→PC，大屏→大屏）
 		toggleFaultPanelLiveScenario() {
 			const targetMode = this.isCompactMode ? 'pc' : 'big-screen';
@@ -3768,22 +4638,22 @@ new Vue({
 			if (this.faultEditState?.picking) this.exitFaultPointPick();
 			const steps = [];
 			if (kind === 'pc') {
-				steps.push({ text: 'PC 实况：进入全屏…', wait: 520, action: async () => { if (!this.isMapFullscreen) this.toggleFullscreen(); } });
+				steps.push({ text: this.t('PC 实况：进入全屏…'), wait: 520, action: async () => { if (!this.isMapFullscreen) this.toggleFullscreen(); } });
 			} else {
-				steps.push({ text: '大屏实况：退出全屏…', wait: 520, action: async () => { if (this.isMapFullscreen) this.toggleFullscreen(); } });
+				steps.push({ text: this.t('大屏实况：退出全屏…'), wait: 520, action: async () => { if (this.isMapFullscreen) this.toggleFullscreen(); } });
 			}
-			steps.push({ text: kind === 'pc' ? 'PC 实况：切换 3D 模式…' : '大屏实况：切换 3D 模式…', wait: 640, action: async () => { if (!this.isGlobe) await this.toggleGlobe(); else await this.uiFlush(); } });
-			steps.push({ text: kind === 'pc' ? 'PC 实况：退出聚焦…' : '大屏实况：退出聚焦…', wait: 320, action: async () => { this.clearFocus(); this.focusTargetCoord = null; this.focusedFaultLineIds = []; this.focusedLanding = null; this.focusedCableId = null; this.updateChart(); } });
-			steps.push({ text: kind === 'pc' ? 'PC 实况：叠加所有故障…' : '大屏实况：叠加所有故障…', wait: 320, action: async () => { this.showFaultCablesOnMap = true; this.updateChart(); } });
-			steps.push({ text: kind === 'pc' ? 'PC 实况：开启自转…' : '大屏实况：开启自转…', wait: 320, action: async () => {
+			steps.push({ text: kind === 'pc' ? this.t('PC 实况：切换 3D 模式…') : this.t('大屏实况：切换 3D 模式…'), wait: 640, action: async () => { if (!this.isGlobe) await this.toggleGlobe(); else await this.uiFlush(); } });
+			steps.push({ text: kind === 'pc' ? this.t('PC 实况：退出聚焦…') : this.t('大屏实况：退出聚焦…'), wait: 320, action: async () => { this.clearFocus(); this.focusTargetCoord = null; this.focusedFaultLineIds = []; this.focusedLanding = null; this.focusedCableId = null; this.updateChart(); } });
+			steps.push({ text: kind === 'pc' ? this.t('PC 实况：叠加所有故障…') : this.t('大屏实况：叠加所有故障…'), wait: 320, action: async () => { this.showFaultCablesOnMap = true; this.updateChart(); } });
+			steps.push({ text: kind === 'pc' ? this.t('PC 实况：开启自转…') : this.t('大屏实况：开启自转…'), wait: 320, action: async () => {
 					// 实况自转默认提速至 10，兼容 2D/3D/紧凑/大屏
 					this.autoRotateSpeed = 10;
 					this.autoRotate = true;
 					this.applyAutoRotateView(this.autoRotateSpeed);
 				} });
-			steps.push({ text: kind === 'pc' ? 'PC 实况：开启故障列表实况…' : '大屏实况：开启故障列表实况…', wait: 320, action: async () => {
+			steps.push({ text: kind === 'pc' ? this.t('PC 实况：开启故障列表实况…') : this.t('大屏实况：开启故障列表实况…'), wait: 320, action: async () => {
 					if (!this.realtimeEnabled) this.toggleRealtime();
-					this.realtimeMessage = kind === 'pc' ? 'PC 实况：故障列表实况开启' : '大屏实况：故障列表实况开启';
+					this.realtimeMessage = kind === 'pc' ? this.t('PC 实况：故障列表实况开启') : this.t('大屏实况：故障列表实况开启');
 				} });
 			try {
 				for (const step of steps) {
@@ -3800,10 +4670,10 @@ new Vue({
 					this.stopLiveScenario(kind, { silentToast: true });
 					return;
 				}
-				this.mapLoadingText = '实况已准备完成';
+				this.mapLoadingText = this.t('实况已准备完成');
 				await this.uiFlush();
 			} catch (e) {
-				this.notifyToast('实况模式执行失败，请重试', 'error');
+				this.notifyToast(this.t('实况模式执行失败，请重试'), 'error');
 				this.stopLiveScenario(kind, { silentToast: true });
 			} finally {
 				setTimeout(() => {
@@ -3824,7 +4694,7 @@ new Vue({
 			this.autoRotateSpeed = this.liveScenarioPrevAutoRotateSpeed || 0.9;
 			this.applyAutoRotateView(this.autoRotate ? this.autoRotateSpeed : 0);
 			const label = kind === 'big-screen' ? '大屏' : 'PC';
-			if (!options.silentToast) this.notifyToast(`${label} 实况已停止`, 'success');
+			if (!options.silentToast) this.notifyToast(`${label} ${this.t('实况已停止')}`, 'success');
 			this.liveScenarioMode = null;
 		},
 		toggleMapDial() {
@@ -3837,9 +4707,9 @@ new Vue({
 			const isRecompute = mode && mode.startsWith('recompute');
 			const engineLabel = this.engineLabelFromMode(mode);
 			if (isRecompute) {
-				this.notifyToast(`3D 重算并保存（${engineLabel}）：开始处理，请稍候…`, 'info');
+				this.notifyToast(`${this.t('3D 重算并保存')}（${engineLabel}）：${this.t('开始处理，请稍候…')}`, 'info');
 			} else if (mode === 'saved') {
-				this.notifyToast('3D 加载已保存：开始加载请稍候…', 'info');
+				this.notifyToast(this.t('3D 加载已保存：开始加载请稍候…'), 'info');
 			}
 			this.updateChart();
 		},
@@ -3880,66 +4750,148 @@ new Vue({
 				setTimeout(() => { this.modeSwitching = false; }, 200);
 			}
 		},
+		// 2D 模式下快捷切换瓦片/普通 2D 底图，复用版本切换的统一流程
+		toggleTileMapVersionQuick() {
+			if (this.isGlobe || this.modeSwitching) return;
+			const prev = this.mapVersion;
+			const fallback2d = (this.mapVersionPrev && this.mapVersionPrev !== 'tiles') ? this.mapVersionPrev : this.preferred2DMapVersion();
+			const next = (this.mapVersion === 'tiles') ? fallback2d : 'tiles';
+			this.mapVersionPrev = prev;
+			this.mapVersion = next;
+			this.onMapVersionChange();
+		},
+		applyEffectDefaultsForMode() {
+			const is2dNormal = (!this.isGlobe && this.mapVersion !== 'tiles');
+			this.lineEffectEnabled = !is2dNormal;
+			this.rippleEffectEnabled = !is2dNormal;
+		},
+		// 3D 模式下直接切回普通 2D（保持三段式切换与状态）
+		async switchTo2DNormalFromGlobe() {
+			if (this.modeSwitching) return;
+			const fallback2d = (this.mapVersionPrev && this.mapVersionPrev !== 'tiles')
+				? this.mapVersionPrev
+				: (this.mapVersion !== 'tiles' ? this.mapVersion : this.preferred2DMapVersion());
+			if (this.isGlobe) {
+				await this.toggleGlobe();
+			}
+			// 切回普通 2D，若当前仍是 tiles 则回退到非 tiles 版本
+			if (this.mapVersion === 'tiles') {
+				this.mapVersion = fallback2d || 'ap-zh';
+				this.onMapVersionChange();
+			} else {
+				this.updateChart();
+			}
+			this.applyLangMapVersion();
+		},
+		// 3D 模式下直接切到 2D 瓦片（保持三段式切换与状态）
+		async switchToTilesFromGlobe() {
+			if (this.modeSwitching) return;
+			if (this.isGlobe) {
+				await this.toggleGlobe();
+			}
+			if (this.mapVersion !== 'tiles') {
+				this.mapVersionPrev = this.mapVersion || 'ap-zh';
+				this.mapVersion = 'tiles';
+				this.onMapVersionChange();
+			} else {
+				this.updateChart();
+			}
+		},
+		// 首次进入 3D 时挑选一条可渲染的非故障海缆，避免故障跳转扰乱初始化
+		selectInitLineForGlobe() {
+			const hasGeo = (l) => !!(l && ((Array.isArray(l.coords_globe) && l.coords_globe.length) || (Array.isArray(l.segments_globe) && l.segments_globe.length) || (Array.isArray(l.coords) && l.coords.length) || (Array.isArray(l.segments) && l.segments.length)));
+			const prefer = (list, skipFault) => (Array.isArray(list) ? list.find(l => hasGeo(l) && (!skipFault || !this.isCableFaulted(l))) : null);
+			return prefer(this.filteredCablesMap, true)
+				|| prefer(this.withMetrics, true)
+				|| prefer(this.cableLines, true)
+				|| prefer(this.filteredCablesMap, false)
+				|| prefer(this.withMetrics, false)
+				|| prefer(this.cableLines, false)
+				|| null;
+		},
+		// 首次 3D 进入的初始化：串行聚焦→退出聚焦→叠加故障，避免白屏卡顿
+		async primeGlobeFirstView() {
+			const candidate = this.selectInitLineForGlobe();
+			if (!candidate) return;
+			// 三段式 Loading：模拟用户点击“退出聚焦”与勾选“地图显示所有故障海缆”
+			this.mapLoadingText = this.t('切换至 3D（3/3：初始化视角 1/3：聚焦非故障海缆）');
+			await this.uiFlush();
+			try {
+				// Step 1：聚焦一条非故障海缆稳定初始视角
+				await this.focusCable(candidate, null, { skipFaultRedirect: true, suppressFocusLoading: true });
+				await this.uiFlush();
+				// Step 2：模拟点击“退出聚焦”按钮：清理聚焦但保留当前 3D 视角参数
+				this.mapLoadingText = this.t('切换至 3D（3/3：初始化视角 2/3：模拟退出聚焦按钮）');
+				await this.uiFlush();
+				let savedView = null;
+				try {
+					const opt = this.myChart && this.myChart.getOption ? this.myChart.getOption() : null;
+					const g = opt ? (Array.isArray(opt.globe) ? opt.globe[0] : opt.globe) : null;
+					savedView = g && g.viewControl ? { ...(g.viewControl || {}) } : null;
+				} catch (e) { savedView = null; }
+				this.clearFocus();
+				if (savedView && this.myChart) {
+					const patch = { globe: { viewControl: {} } };
+					if (Array.isArray(savedView.targetCoord)) patch.globe.viewControl.targetCoord = savedView.targetCoord.slice();
+					if (isFinite(savedView.distance)) patch.globe.viewControl.distance = Number(savedView.distance);
+					this.myChart.setOption(patch, false);
+				}
+				// Step 3：模拟勾选“地图显示所有故障海缆”复选框
+				this.mapLoadingText = this.t('切换至 3D（3/3：初始化视角 3/3：勾选显示所有故障海缆）');
+				this.showFaultCablesOnMap = true;
+				this.updateChart();
+				await this.uiFlush();
+				this.mapLoadingText = this.t('切换至 3D（3/3：初始化视角完成）');
+				this.globeInitFocusedOnce = true;
+			} catch (e) { /* noop */ }
+		},
 		async toggleGlobe() {
 			if (this.modeSwitching) return;
 			this.modeSwitching = true;
+			// 2D/3D 切换统一三段式进度，兼顾八模式
+			const switchToGlobe = !this.isGlobe;
+			const targetLabel = switchToGlobe ? '3D' : '2D';
+			const report = (text) => { this.mapLoading = true; this.mapLoadingText = this.t(text); };
+			const finish = () => { this.mapLoading = false; this.mapLoadingText = ''; };
+			const shouldPrimeGlobe = switchToGlobe && !this.globeInitFocusedOnce;
 			try {
-				this.isGlobe = !this.isGlobe;
-				const firstEnterGlobe = this.isGlobe && !this.globeInitFocusedOnce;
-				if (firstEnterGlobe) {
-					this.mapLoading = true;
-					this.mapLoadingText = '预加载 3D 纹理…';
+				report(switchToGlobe ? '切换至 3D（1/3：准备资源）' : '切换至 2D（1/3：准备资源）');
+				this.isGlobe = switchToGlobe;
+				// 按模式应用默认动效（2D 普通默认关闭，3D/tiles 默认开启）
+				this.applyEffectDefaultsForMode();
+				// 进入 3D 时移除瓦片实例，防止遮挡；回到 2D tiles 会重新创建
+				if (switchToGlobe && this.tileViewer) {
+					try { if (this.tileViewer.destroy) this.tileViewer.destroy(); } catch (e) { /* noop */ }
+					this.tileViewer = null;
 				}
-				if (this.isGlobe) {
+				const firstEnterGlobe = switchToGlobe && !this.globeInitFocusedOnce;
+				if (switchToGlobe) {
+					report('切换至 3D（2/3：加载纹理）');
 					await this.ensureGlobeTextures();
-					if (firstEnterGlobe) {
-						this.mapLoadingText = '加载 3D 海缆数据…';
-					}
+					report('切换至 3D（3/3：加载海缆数据）');
+				} else {
+					report('切换至 2D（2/3：释放 3D 资源）');
 				}
 				// 切换维度后重新加载数据以匹配 2D/3D 字段
-				if (firstEnterGlobe) {
-					this.mapLoadingText = '初始化 3D 场景…';
-				}
 				await this.loadCableData();
+				// 确保 i18n 词典加载（首次切换时）
+				if (!this._i18nLoadedOnce) { await this.loadI18nDict(); this._i18nLoadedOnce = true; }
+				report(switchToGlobe ? '切换至 3D：刷新视图…' : '切换至 2D：刷新视图…');
 				// 切换后立即按当前筛选重绘，保留聚焦/筛选状态
 				this.updateChart();
 				this.$nextTick(() => this.updateChart());
 				// 同步滑条
 				this.statesToSlider();
-				// 首次进入 3D：自动聚焦第一条海缆，再退出聚焦，稳定视角（仅一次）
-				if (this.isGlobe && !this.globeInitFocusedOnce) {
-					// 显示模拟进度
-					this.mapLoading = true;
-					this.mapLoadingText = '正在进入 3D 模式…';
-					this.$nextTick(() => {
-						setTimeout(() => {
-							try {
-								this.mapLoadingText = '正在聚焦首条海缆…';
-								const first = (Array.isArray(this.filteredCablesMap) && this.filteredCablesMap.length)
-									? this.filteredCablesMap[0]
-									: (Array.isArray(this.withMetrics) && this.withMetrics.length ? this.withMetrics[0] : null);
-								if (!first || !this.isGlobe) { this.mapLoading = false; return; }
-								this.focusCable(first);
-								// 允许一次重绘将视角设置到该海缆，然后退出聚焦但保留视角
-								setTimeout(() => {
-									try {
-										if (!this.isGlobe) { this.mapLoading = false; return; }
-										this.mapLoadingText = '正在退出聚焦并开启故障叠加…';
-										this.clearFocus();
-										this.showFaultCablesOnMap = true;
-										this.updateChart();
-										setTimeout(() => {
-											this.globeInitFocusedOnce = true;
-											this.mapLoading = false;
-											this.mapLoadingText = '';
-										}, 320);
-									} catch (e) { this.mapLoading = false; }
-								}, 540);
-							} catch (e) { this.mapLoading = false; }
-						}, 360);
-					});
+				if (!switchToGlobe) this.applyLangMapVersion();
+				if (shouldPrimeGlobe) {
+					report('切换至 3D：初始化场景…');
+					await this.primeGlobeFirstView();
+					finish();
+				} else {
+					setTimeout(finish, 180);
 				}
 			} finally {
+				setTimeout(() => { if (this.mapLoading) finish(); }, 240);
 				this.modeSwitching = false;
 			}
 		},
@@ -3947,14 +4899,14 @@ new Vue({
 		async toggleAutoRotate() {
 			const turningOn = !this.autoRotate;
 			this.mapLoading = true;
-			this.mapLoadingText = turningOn ? '正在开启自转…' : '正在关闭自转…';
+			this.mapLoadingText = turningOn ? this.t('正在开启自转…') : this.t('正在关闭自转…');
 			await this.uiFlush();
 			this.autoRotate = turningOn;
 			this.applyAutoRotateView(this.autoRotateSpeed);
 			setTimeout(() => {
 				this.mapLoading = false;
 				this.mapLoadingText = '';
-				this.notifyToast(turningOn ? '已开启自转' : '已关闭自转', 'success');
+				this.notifyToast(turningOn ? this.t('已开启自转') : this.t('已关闭自转'), 'success');
 			}, 220);
 		},
 		toggleLegend() {
@@ -3963,11 +4915,13 @@ new Vue({
 		},
 		// Agent 入口：占位功能，点击弹出提示
 		openAgent() {
-			this.notifyToast('Agent 功能敬请期待', 'info', 'Agent');
+			this.notifyToast(this.t('Agent 功能敬请期待'), 'info', 'Agent');
 		},
 		toggleCompactMode() {
 			if (this.modeSwitching) return;
 			this.modeSwitching = true;
+			this.mapLoading = true;
+			this.mapLoadingText = this.isCompactMode ? '切换为大屏模式…（1/3：释放布局）' : '切换为紧凑模式…（1/3：收紧布局）';
 			try {
 				// 如果当前处于故障聚焦，暂存状态以便切换后恢复
 				const shouldRestoreFault = this.focusMode === 'fault';
@@ -3980,6 +4934,7 @@ new Vue({
 				this.isCompactMode = !this.isCompactMode;
 				this.compactCollapsed = false;
 				this.faultOverlayMode = false;
+				setTimeout(() => { this.mapLoadingText = this.isCompactMode ? '切换为紧凑模式…（2/3：重建面板）' : '切换为大屏模式…（2/3：重建网格）'; }, 200);
 				if (this.myChart) {
 					try { this.myChart.dispose(); } catch (e) { }
 					this.myChart = null;
@@ -3996,6 +4951,8 @@ new Vue({
 					}
 				});
 			} finally {
+				setTimeout(() => { this.mapLoadingText = this.isCompactMode ? this.t('切换为紧凑模式…（3/3：刷新地图）') : this.t('切换为大屏模式…（3/3：刷新地图）'); }, 420);
+				setTimeout(() => { this.mapLoading = false; this.mapLoadingText = ''; }, 900);
 				setTimeout(() => { this.modeSwitching = false; }, 300);
 			}
 		},
@@ -4116,7 +5073,13 @@ new Vue({
 		},
 		statesToSlider() {
 			try {
-				if (this.isGlobe) {
+				if (!this.isGlobe && this.mapVersion === 'tiles') {
+					const min = this.tileViewer?.opts?.minZoom || 1;
+					const max = this.tileViewer?._maxZoom || this.tileViewer?.opts?.maxZoom || 7;
+					const z = this.tileViewer && this.tileViewer.getZoom ? this.tileViewer.getZoom() : 2;
+					const t = Math.max(0, Math.min(1, (z - min) / (max - min)));
+					this.zoomSlider = Math.round(t * 100);
+				} else if (this.isGlobe) {
 					const min = 20, max = this.globeMaxDistance || 320;
 					const d = Math.max(min, Math.min(max, this.globeDistance || 130));
 					const r = min / max;
@@ -4144,6 +5107,14 @@ new Vue({
 		onZoomSlider() {
 			try {
 				const s = this.zoomSlider;
+				if (!this.isGlobe && this.mapVersion === 'tiles') {
+					const min = this.tileViewer?.opts?.minZoom || 1;
+					const max = this.tileViewer?._maxZoom || this.tileViewer?.opts?.maxZoom || 7;
+					const t = Math.max(0, Math.min(1, s / 100));
+					const z = Math.round(min + t * (max - min));
+					if (this.tileViewer && this.tileViewer.setZoom) this.tileViewer.setZoom(z);
+					return;
+				}
 				if (this.isGlobe) {
 					const next = this.sliderToGlobeDistance(s);
 					this.globeDistance = next;
@@ -4159,9 +5130,33 @@ new Vue({
 			const exists = this.titleBgOptions.some(o => o.key === key);
 			this.currentTitleBgKey = exists ? key : '蓝色科技风主标题.png';
 		},
+		syncFocusTitleSkin(picking = false) {
+			// 聚焦态统一切换主标题为黑客流光皮肤（打点时保持原皮肤）
+			try {
+				const focusActive = !!(this.focusMode && this.focusMode !== 'none');
+				const needHacker = focusActive && !picking;
+				if (needHacker && this.currentTitleBgKey !== 'banner-alt2') {
+					this._prevTitleBgKey = this._prevTitleBgKey || this.currentTitleBgKey;
+					this.applyTitleBg('banner-alt2');
+				} else if (!needHacker && this._prevTitleBgKey) {
+					this.applyTitleBg(this._prevTitleBgKey);
+					this._prevTitleBgKey = null;
+				}
+			} catch (e) { /* noop */ }
+		},
 		// 旧 2D 背景纹理逻辑移除：避免与底色风格重复，统一走 ECharts 配置渲染
 		zoomIn() {
 			try {
+				if (!this.isGlobe && this.mapVersion === 'tiles') {
+					if (this.tileViewer && this.tileViewer.setZoom && this.tileViewer.getZoom) {
+						const baseMax = this.tileViewer.opts ? (this.tileViewer.opts.maxZoom || 7) : 7; // 瓦片资源上限 7 级
+						const extra = this.tileViewer.opts ? Math.log2(Math.max(1.0001, this.tileViewer.opts.overzoomFactor || 1)) : 0;
+						const upper = baseMax + extra;
+						const next = Math.min(upper, (this.tileViewer.getZoom() || 2) + 1);
+						this.tileViewer.setZoom(next);
+					}
+					return;
+				}
 				if (!this.myChart) return;
 				if (this.isGlobe) {
 					const step = 12;
@@ -4182,6 +5177,14 @@ new Vue({
 		},
 		zoomOut() {
 			try {
+				if (!this.isGlobe && this.mapVersion === 'tiles') {
+					if (this.tileViewer && this.tileViewer.setZoom && this.tileViewer.getZoom) {
+						const minZ = this.tileViewer.opts ? (this.tileViewer.opts.minZoom || 1) : 1;
+						const next = Math.max(minZ, (this.tileViewer.getZoom() || 2) - 1);
+						this.tileViewer.setZoom(next);
+					}
+					return;
+				}
 				if (!this.myChart) return;
 				if (this.isGlobe) {
 					const step = 12;
@@ -4205,6 +5208,7 @@ new Vue({
 				if (!this.myChart || !this.focusTargetCoord || !Array.isArray(this.focusTargetCoord)) return;
 				const [cx, cy] = this.focusTargetCoord;
 				if (this.isGlobe) {
+					// 保留方法但不在 hover 等场景自动调用，避免过度抢镜
 					this.myChart.setOption({ globe: { viewControl: { targetCoord: [Number(cx), Number(cy)] } } });
 				} else {
 					this.myChart.setOption({ geo: { center: [Number(cx), Number(cy)] } });
@@ -4215,7 +5219,7 @@ new Vue({
 		async resetView() {
 			if (this.modeSwitching) return;
 			this.mapLoading = true;
-			this.mapLoadingText = '正在复位视角…';
+			this.mapLoadingText = this.t('正在复位视角…');
 			await this.uiFlush();
 			// 先清空聚焦，避免覆盖目标视角
 			this.clearFocus();
@@ -4226,6 +5230,7 @@ new Vue({
 			this.globeDistance = 160;
 			// 设置亚太中心为目标并更新
 			this.focusTargetCoord = this.isGlobe ? [120, 20] : null;
+			this.pendingFocusRecenter3D = this.isGlobe;
 			this.updateChart();
 			// 强制应用目标与默认角度，确保相机回正
 			if (this.isGlobe && this.myChart) {
@@ -4245,7 +5250,7 @@ new Vue({
 			setTimeout(() => {
 				this.mapLoading = false;
 				this.mapLoadingText = '';
-				this.notifyToast('已复位视角（亚太中心）', 'success');
+				this.notifyToast(this.t('已复位视角（亚太中心）'), 'success');
 			}, 320);
 		},
 		loadImage(url, timeout = 6000) {
@@ -4267,8 +5272,8 @@ new Vue({
 		},
 		async ensureGlobeTextures() {
 			try {
-				const localBase = encodeURI('3D 地图资源/world.topo.bathy.200401.jpg');
-				const localHeight = encodeURI('3D 地图资源/bathymetry_bw_composite_4k.jpg');
+				const localBase = encodeURI('3dMap/world.topo.bathy.200401.jpg');
+				const localHeight = encodeURI('3dMap/bathymetry_bw_composite_4k.jpg');
 				const baseCandidates = [
 					localBase,
 					'https://echarts.apache.org/examples/data-gl/asset/world.topo.bathy.200401.jpg',
@@ -4339,7 +5344,7 @@ new Vue({
 					}
 					return;
 				}
-				const url = encodeURI(`海缆数据/cablesub/${id}.json`);
+				const url = encodeURI(`seacable_data/cablesub/${id}.json`);
 				const res = await fetch(url);
 				if (!res.ok) throw new Error(`HTTP ${res.status}`);
 				const json = await res.json();
@@ -4430,9 +5435,9 @@ new Vue({
 						this.cableLines = useStandard ? standard : ap;
 						try {
 							const r = await this.persist2DRebuilt(ap, standard);
-							this.notifyToast(`2D 加载已保存：未找到文件，已重算并写入（使用：${(r && r.engine) || 'php'}）`, 'success');
+							this.notifyToast(`${this.t('2D 加载已保存')}：${this.t('未找到文件，已重算并写入')}（${this.t('使用')}：${(r && r.engine) || 'php'}）`, 'success');
 						} catch (e) {
-							this.notifyToast('2D 加载已保存：保存失败，请联系管理员', 'error');
+							this.notifyToast(`${this.t('2D 加载已保存')}：${this.t('保存失败，请联系管理员')}`, 'error');
 						}
 						return;
 					} else if (isRecompute2d) {
@@ -4440,9 +5445,9 @@ new Vue({
 						this.cableLines = useStandard ? standard : ap;
 						try {
 							const r = await this.persist2DRebuilt(ap, standard);
-							this.notifyToast(`2D 重算并保存：完成并写入（使用：${(r && r.engine) || 'php'}）`, 'success');
+							this.notifyToast(`${this.t('2D 重算并保存')}：${this.t('完成并写入')}（${this.t('使用')}：${(r && r.engine) || 'php'}）`, 'success');
 						} catch (e) {
-							this.notifyToast('2D 重算并保存：保存失败，请联系管理员', 'error');
+							this.notifyToast(`${this.t('2D 重算并保存')}：${this.t('保存失败，请联系管理员')}`, 'error');
 						}
 						return;
 					}
@@ -4452,26 +5457,26 @@ new Vue({
 					const mode3d = this.threeDRebuildMode;
 					const isRecompute3d = mode3d && mode3d.startsWith('recompute');
 					const recomputeAndPersist3D = async () => {
-						this.notifyToast('3D 重算并保存：正在重构 3D 海缆数据…', 'info');
+						this.notifyToast(`${this.t('3D 重算并保存')}：${this.t('正在重构 3D 海缆数据…')}`, 'info');
 						const items3d = await this.compute3DRebuiltFromRaw();
 						this.cableLines = items3d;
 						try {
 							const r = await this.persist3DRebuilt(items3d);
-							this.notifyToast(`3D 重算并保存：完成并写入（使用：${(r && r.engine) || 'php'}）`, 'success');
+							this.notifyToast(`${this.t('3D 重算并保存')}：${this.t('完成并写入')}（${this.t('使用')}：${(r && r.engine) || 'php'}）`, 'success');
 						} catch (e) {
-							const reason = e && e.message ? e.message : '保存失败';
-							this.notifyToast(`3D 重算并保存：保存失败（${reason}）`, 'error');
+							const reason = e && e.message ? e.message : this.t('保存失败');
+							this.notifyToast(`${this.t('3D 重算并保存')}：${this.t('保存失败')}${reason ? `（${reason}）` : ''}`, 'error');
 						}
 					};
 					if (mode3d === 'saved') {
-						this.notifyToast('3D 加载已保存：正在加载 3D 海缆数据…', 'info');
+						this.notifyToast(`${this.t('3D 加载已保存')}：${this.t('正在加载 3D 海缆数据…')}`, 'info');
 						const loaded3d = await this.loadSaved3DGlobe().catch(() => []);
 						if (Array.isArray(loaded3d) && loaded3d.length) {
 							this.cableLines = loaded3d;
-							this.notifyToast('3D 加载已保存：3D 海缆数据加载完成', 'success');
+							this.notifyToast(`${this.t('3D 加载已保存')}：${this.t('3D 海缆数据加载完成')}`, 'success');
 							return;
 						}
-						this.notifyToast('3D 加载已保存：未找到文件，改为重算并保存…', 'warning');
+						this.notifyToast(`${this.t('3D 加载已保存')}：${this.t('未找到文件，改为重算并保存…')}`, 'warning');
 						try {
 							await recomputeAndPersist3D();
 							return;
@@ -4488,7 +5493,7 @@ new Vue({
 					}
 				}
 				// 原始数据流程（3D 模式或选择原始）
-				const res = await fetch(encodeURI('海缆数据/cable-geo_v3.json'));
+				const res = await fetch(encodeURI('seacable_data/cable-geo_v3.json'));
 				if (!res.ok) throw new Error(`加载海缆总表失败: HTTP ${res.status}`);
 				const json = await res.json();
 				const features = Array.isArray(json?.features) ? json.features : [];
@@ -4518,7 +5523,7 @@ new Vue({
 		},
 		// 计算 2D 重构结果：返回亚太中心版与标准版两套数据
 		async compute2DRebuiltFromRaw() {
-			const res = await fetch(encodeURI('海缆数据/cable-geo_v3.json'));
+			const res = await fetch(encodeURI('seacable_data/cable-geo_v3.json'));
 			if (!res.ok) throw new Error(`加载海缆总表失败: HTTP ${res.status}`);
 			const json = await res.json();
 			const features = Array.isArray(json?.features) ? json.features : [];
@@ -4551,7 +5556,7 @@ new Vue({
 		// 加载已保存的 2D 重算结果（亚太中心版）
 		async loadSaved2DAP() {
 			try {
-				const url = encodeURI('海缆数据/重构的数据/2d亚太中心海缆数据.json');
+				const url = encodeURI('seacable_data/重构的数据/2d亚太中心海缆数据.json');
 				const res = await fetch(url, { cache: 'no-store' });
 				if (!res.ok) return [];
 				const json = await res.json();
@@ -4569,7 +5574,7 @@ new Vue({
 		// 加载已保存的 2D 重算结果（标准版）
 		async loadSaved2DStandard() {
 			try {
-				const url = encodeURI('海缆数据/重构的数据/2d标准地图海缆数据.json');
+				const url = encodeURI('seacable_data/重构的数据/2d标准地图海缆数据.json');
 				const res = await fetch(url, { cache: 'no-store' });
 				if (!res.ok) return [];
 				const json = await res.json();
@@ -4606,18 +5611,18 @@ new Vue({
 				const isRecompute = mode && mode.startsWith('recompute');
 				const engineLabel = this.engineLabelFromMode(mode);
 				if (isRecompute) {
-					this.notifyToast(`2D 重算并保存（${engineLabel}）：开始处理，请稍候…`, 'info');
+					this.notifyToast(`${this.t('2D 重算并保存')}（${engineLabel}）：${this.t('开始处理，请稍候…')}`, 'info');
 				} else if (mode === 'saved') {
-					this.notifyToast('2D 加载已保存：开始加载请稍候…', 'info');
+					this.notifyToast(`${this.t('2D 加载已保存')}：${this.t('开始加载请稍候…')}`, 'info');
 				}
 				await this.ensureBaseMapForMode();
 				await this.loadCableData();
 				await this.loadLandingPoints();
 				this.updateChart();
 				if (isRecompute) {
-					this.notifyToast(`2D 重算并保存（${engineLabel}）：已完成并写入文件`, 'success');
+					this.notifyToast(`${this.t('2D 重算并保存')}（${engineLabel}）：${this.t('完成并写入')}`, 'success');
 				} else if (mode === 'saved') {
-					this.notifyToast('2D 加载已保存：已完成加载', 'success');
+					this.notifyToast(`${this.t('2D 加载已保存')}：${this.t('已完成加载')}`, 'success');
 				}
 			} finally {
 				this.modeSwitching = false;
@@ -4634,9 +5639,54 @@ new Vue({
 			this.modeSwitching = true;
 			try {
 				this.mapVersionPrev = this.mapVersion;
+				// 模式切换时按模式应用默认动效（2D 普通关闭，3D/tiles 开启）
+				this.applyEffectDefaultsForMode();
 				await this.ensureBaseMapForMode();
 				await this.loadCableData();
 				await this.loadLandingPoints();
+				// 进入 tiles 模式时销毁 ECharts 并初始化瓦片渲染器；离开 tiles 模式时销毁瓦片渲染器
+				if (!this.isGlobe && this.mapVersion === 'tiles') {
+					try { if (this.myChart) { this.myChart.dispose(); this.myChart = null; this.chartEventTarget = null; } } catch (e) { /* noop */ }
+					const el = this.$refs.map || document.getElementById('worldCableMap');
+					if (el && window && window.TileMap) {
+						this._tileUserPanned = false;
+						this._tilePickCenterKey = null;
+						const center = Array.isArray(this.focusTargetCoord) ? this.focusTargetCoord.slice() : this.mapCenter();
+						const normalizeTileCoord = (c) => {
+							if (!c) return null;
+							if (Array.isArray(c) && c.length >= 2) return [Number(c[0]), Number(c[1])];
+							if (typeof c.lon === 'number' && typeof c.lat === 'number') return [Number(c.lon), Number(c.lat)];
+							return null;
+						};
+						const onZoomCb = (z) => {
+							const min = 1;
+							const max = this.tileViewer?._maxZoom || this.tileViewer?.opts?.maxZoom || 7; // 瓦片资源最高支持 7 级
+							const t = Math.max(0, Math.min(1, (z - min) / (max - min)));
+							this.zoomSlider = Math.round(t * 100);
+						};
+						const onPanCb = (c) => { if (Array.isArray(c) && c.length >= 2) this.focusTargetCoord = c.slice(); };
+						const onLineClick = (line, coordObj) => {
+							if (this.faultEditState.picking && coordObj) { const c = normalizeTileCoord(coordObj); if (c) { this.handleTileMapPick(c); return true; } }
+							if (line && line.lineData) { this.focusCable(line.lineData); return true; }
+							return false;
+						};
+						const onPointClick = (pt, coordObj) => {
+							if (this.faultEditState.picking) { const c = normalizeTileCoord(coordObj || pt?.coord || pt?.value); if (c) { this.handleTileMapPick(c); return true; } return false; }
+							if (pt && pt.lpData) { this.focusLanding(pt.lpData); return true; }
+							if (pt && pt.lineData) { this.focusCable(pt.lineData); return true; }
+							return false;
+						};
+						const onMapClick = (payload) => {
+							if (!this.faultEditState.picking) return;
+							const c = normalizeTileCoord(payload?.coord);
+							if (c) this.handleTileMapPick(c);
+						};
+						this.tileViewer = new window.TileMap(el, { basePath: 'img/tiles_world_img', center, zoom: 2, minZoom: 1, maxZoom: 7, onZoom: onZoomCb, onPan: onPanCb, onLineClick, onPointClick, onMapClick });
+					}
+				} else if (this.tileViewer) {
+					try { if (this.tileViewer && this.tileViewer.destroy) this.tileViewer.destroy(); } catch (e) { /* noop */ }
+					this.tileViewer = null;
+				}
 				if (convertedCoord) {
 					this.setFaultPointMarkerFromCoord(convertedCoord);
 					if (this.faultEditState.active && this.faultEditState.cable) {
@@ -4656,6 +5706,8 @@ new Vue({
 						if (this.focusTargetCoord && Array.isArray(this.focusTargetCoord)) {
 							if (this.isGlobe) {
 								this.myChart && this.myChart.setOption({ globe: { viewControl: { targetCoord: this.focusTargetCoord } } });
+							} else if (this.mapVersion === 'tiles' && this.tileViewer && this.tileViewer.setCenter) {
+								this.tileViewer.setCenter(this.focusTargetCoord.map(Number));
 							} else {
 								const center = this.focusTargetCoord.map(Number);
 								const zoom = this.geoZoom || 1.8;
@@ -4670,9 +5722,10 @@ new Vue({
 		},
 		faultApiModeLabel(mode) {
 			const reach = this.faultApiReachability[mode.key];
-			if (reach === false) return `${mode.name}（不可用）`;
-			if (reach === true) return `${mode.name}（可用）`;
-			return mode.name;
+			const name = this.t(mode.name);
+			if (reach === false) return `${name} (${this.t('不可用')})`;
+			if (reach === true) return `${name} (${this.t('可用')})`;
+			return name;
 		},
 		isFaultModeDisabled(key) {
 			return this.faultApiReachability[key] === false;
@@ -4680,7 +5733,7 @@ new Vue({
 		faultApiBaseByMode(key) {
 			const mode = this.faultApiModes.find(m => m.key === key);
 			if (!mode) return '';
-			return `http://${mode.host}/fault_data_url/index.php/customer/cmccFaultPanelv2Agent`;
+			return `http://${mode.host}/controlRoomPrivate/index.php/customer/cmccFaultPanelv2Agent`;
 		},
 		resolveFaultApiBase() {
 			if (this.isFaultModeDisabled(this.faultApiMode)) return '';
@@ -4707,7 +5760,7 @@ new Vue({
 			if (!ok && alertOnFail) {
 				const mode = this.faultApiModes.find(m => m.key === modeKey);
 				const name = mode ? mode.name : modeKey;
-				this.notifyToast(`${name} 接口不可用，请检查网络或服务状态`, 'warning');
+				this.notifyToast(`${name} ${this.t('接口不可用，请检查网络或服务状态')}`, 'warning');
 			}
 			return ok;
 		},
@@ -4778,7 +5831,7 @@ new Vue({
 			this.demoFaultsAuto = source === 'auto';
 			this.faultsFromApi = this.buildDemoFaults();
 			this.rebuildFaultImpactSets();
-			this.realtimeMessage = source === 'auto' ? '接口不可用，已启用演示故障数据' : '已开启演示故障数据';
+			this.realtimeMessage = source === 'auto' ? this.t('接口不可用，已启用演示故障数据') : this.t('已开启演示故障数据');
 			this.$nextTick(() => this.updateChart());
 		},
 		async disableDemoFaults({ reload = false } = {}) {
@@ -4788,10 +5841,10 @@ new Vue({
 			this.rebuildFaultImpactSets();
 			this.$nextTick(() => this.updateChart());
 			if (reload && (!this.faultsFromApi || !this.faultsFromApi.length)) {
-				this.realtimeMessage = '演示故障已关闭，正在尝试拉取真实数据…';
+				this.realtimeMessage = this.t('演示故障已关闭，正在尝试拉取真实数据…');
 				await this.loadFaults();
 			} else if (!reload) {
-				this.realtimeMessage = '已恢复真实故障数据';
+				this.realtimeMessage = this.t('已恢复真实故障数据');
 			}
 		},
 		async toggleDemoFaults() {
@@ -4861,7 +5914,10 @@ new Vue({
 		async loadFaults() {
 			this.faultsLoading = true;
 			// 提示：开始刷新故障数据（根据当前接口模式），若演示模式开启也要同步提示
-			this.realtimeMessage = `正在刷新故障数据（模式：${this.faultApiMode}${this.useDemoFaults ? '，演示模式开启' : ''}）…`;
+			const modeObj = this.faultApiModes.find(m => m.key === this.faultApiMode);
+			const modeLabel = modeObj ? this.t(modeObj.name) : this.t('故障接口');
+			const demoLabel = this.useDemoFaults ? ` | ${this.t('演示模式开启')}` : '';
+			this.realtimeMessage = `${this.t('正在刷新故障数据…')} (${modeLabel}${demoLabel})`;
 			try {
 				const base = this.resolveFaultApiBase();
 				if (!base) throw new Error('无可用故障接口');
@@ -4873,10 +5929,10 @@ new Vue({
 				this.lastRealFaults = list;
 				if (!this.useDemoFaults) {
 					this.faultsFromApi = list;
-					this.realtimeMessage = `故障数据刷新成功，共 ${list.length} 条`;
+					this.realtimeMessage = `${this.t('故障数据刷新成功')}，${this.t('共')} ${list.length} ${this.t('条')}`;
 				} else {
 					// 手动开启演示时仍保留真实数据缓存，避免切换后丢失
-					this.realtimeMessage = '已获取真实故障数据，当前演示模式开启中';
+					this.realtimeMessage = this.t('已获取真实故障数据，当前演示模式开启中');
 				}
 				this.$set(this.faultApiReachability, this.faultApiMode, true);
 				this.demoFaultsAuto = false;
@@ -4894,21 +5950,40 @@ new Vue({
 				const allDown = this.areAllFaultApisDown(reachSnapshot);
 				if (allDown) {
 					this.enableDemoFaults('auto');
-					this.realtimeMessage = '所有故障接口不可用，已切换演示故障数据';
+					this.realtimeMessage = this.t('所有故障接口不可用，已切换演示故障数据');
 					console.warn('故障接口不可用，已启用演示故障数据兜底', e);
 				} else if (this.useDemoFaults) {
 					// 保持演示模式但不重复提示，确保 2D/3D、聚焦/打点/实况一致可用
 					this.enableDemoFaults(this.demoFaultsAuto ? 'auto' : 'manual');
-					this.realtimeMessage = '接口异常，继续展示演示故障数据';
+					this.realtimeMessage = this.t('接口异常，继续展示演示故障数据');
 				} else {
 					this.faultsFromApi = [];
-					this.realtimeMessage = '故障数据刷新失败：接口不可达或解析错误';
+					this.realtimeMessage = this.t('故障数据刷新失败：接口不可达或解析错误');
 					this.rebuildFaultImpactSets();
 				}
 			} finally {
 				this.faultsLoading = false;
 				this.$nextTick(() => this.updateChart());
 			}
+		},
+		refreshRealtimeMessageLang() {
+			if (this.faultsLoading) {
+				const modeObj = this.faultApiModes.find(m => m.key === this.faultApiMode);
+				const modeLabel = modeObj ? this.t(modeObj.name) : this.t('故障接口');
+				const demoLabel = this.useDemoFaults ? ` | ${this.t('演示模式开启')}` : '';
+				this.realtimeMessage = `${this.t('正在刷新故障数据…')} (${modeLabel}${demoLabel})`;
+				return;
+			}
+			const faultLen = Array.isArray(this.faultsFromApi) ? this.faultsFromApi.length : 0;
+			if (faultLen > 0) {
+				this.realtimeMessage = `${this.t('故障数据刷新成功')}，${this.t('共')} ${faultLen} ${this.t('条')}`;
+				return;
+			}
+			if (this.useDemoFaults && Array.isArray(this.lastRealFaults) && this.lastRealFaults.length > 0) {
+				this.realtimeMessage = this.t('已获取真实故障数据，当前演示模式开启中');
+				return;
+			}
+			if (this.realtimeMessage) this.realtimeMessage = this.t(this.realtimeMessage);
 		},
 		rebuildFaultImpactSets() {
 			const src = (Array.isArray(this.faultsFromApi) && this.faultsFromApi.length) ? this.faultsFromApi : (this.displayFaults || []);
@@ -5137,6 +6212,273 @@ new Vue({
 			this.showLandingLabels = !this.showLandingLabels;
 			this.updateChart();
 		},
+		// 统一控制登陆站基础标签的显示：聚焦故障时默认隐藏，只保留故障涉及登陆站的专用标签
+		shouldShowBaseLandingLabels() {
+			if (this.focusMode === 'fault') return false;
+			return (this.focusMode !== 'none') || this.showLandingLabels;
+		},
+		// 聚焦时的全屏 loading，确保先出现提示再执行重绘
+		startFocusLoading(text = this.t('正在聚焦…')) {
+			const raw = String(text == null ? '' : text);
+			const key = `${raw}（1/2：准备数据）`;
+			this.mapLoading = true;
+			this.mapLoadingText = this.t(key);
+		},
+		finishFocusLoading() {
+			setTimeout(() => {
+				this.mapLoading = false;
+				this.mapLoadingText = '';
+			}, 200);
+		},
+		// 瓦片模式复用 tooltip：根据点/线构造与 ECharts 一致的数据结构
+		showTileTooltip(target, pos, kind) {
+			if (!target || !pos || this.isGlobe || this.mapVersion !== 'tiles') return;
+			try {
+				const container = this.$refs.map || document.getElementById('worldCableMap');
+				if (!container) return;
+				let tip = document.getElementById('tile-hover-tip');
+				if (!tip) {
+					tip = document.createElement('div');
+					tip.id = 'tile-hover-tip';
+					tip.style.position = 'absolute';
+					tip.style.pointerEvents = 'none';
+					tip.style.zIndex = '12';
+					tip.style.maxWidth = '480px';
+					tip.style.transition = 'opacity 120ms ease';
+					tip.style.opacity = '0';
+					tip.style.background = 'rgba(8,15,30,0.92)';
+					tip.style.border = '1px solid rgba(72,219,251,0.6)';
+					tip.style.borderRadius = '12px';
+					tip.style.boxShadow = '0 10px 28px rgba(0,0,0,0.38), 0 0 14px rgba(72,219,251,0.35)';
+					tip.style.padding = '10px 12px';
+					tip.style.color = '#e8f7ff';
+					tip.className = 'sc-tooltip tile-tooltip';
+					container.appendChild(tip);
+				}
+				const rect = container.getBoundingClientRect();
+				const left = pos.x - rect.left + 12;
+				const top = pos.y - rect.top + 12;
+				let html = '';
+				if (kind === 'point') {
+					html = this.renderMapTooltip({ seriesType: 'scatter', data: { ...target, value: target.coord || target.value } });
+				} else if (kind === 'line') {
+					html = this.renderMapTooltip({ seriesType: 'lines', data: { ...target, lineData: target.lineData || target } });
+				}
+				if (!html) { this.hideTileTooltip(); return; }
+				tip.innerHTML = html;
+				tip.style.left = `${left}px`;
+				tip.style.top = `${top}px`;
+				tip.style.opacity = '1';
+				tip.style.display = 'block';
+			} catch (e) { /* silent */ }
+		},
+		hideTileTooltip() {
+			try {
+				const tip = document.getElementById('tile-hover-tip');
+				if (tip) { tip.style.opacity = '0'; tip.style.display = 'none'; }
+			} catch (e) { /* noop */ }
+		},
+		// 收集故障定位图标：包含故障点坐标与手动打点，供瓦片/2D 一致显示；支持全量故障
+		collectFaultLocationIcons(fault, includeAll = false) {
+			// 功能说明：
+			// - 返回用于覆盖层绘制的“故障定位点”图标集合，兼容 2D 普通/3D/2D 瓦片/聚焦/打点/实况九模式。
+			// - 标签格式遵循「故障 i 定位点 j」且 i 基于当前故障在列表中的真实序号；
+			//   当故障缺少唯一键（faultId/id/name）时，优先使用 selectedFaultIndex，其次按对象引用/关键字段组合匹配，避免统一被识别为 1。
+			const pts = [];
+			const faultList = (Array.isArray(this.faultsFromApi) && this.faultsFromApi.length) ? this.faultsFromApi : (this.displayFaults || []);
+			// 计算当前故障的序号（从 1 开始）：更健壮的多重回退
+			const idxOf = (f) => {
+				try {
+					if (!f) return 0;
+					// 1) 首选：selectedFaultIndex（仅在当前 src 与选中故障一致时）
+					if (this.selectedFault && f === this.selectedFault && Number.isInteger(this.selectedFaultIndex) && this.selectedFaultIndex >= 0) {
+						const idx = this.selectedFaultIndex + 1;
+						this.focusDebug('定位点标签索引：使用选中故障序号', { index: idx });
+						return idx;
+					}
+					// 2) 其次：稳定键比较（faultId/id/name），避免空串导致全部匹配到第一个
+					const keyOf = (x) => {
+						const k = this.faultKey ? this.faultKey(x) : (x && (x.faultId || x.id || x.name || ''));
+						return String(k || '').trim();
+					};
+					const key = keyOf(f);
+					if (key) {
+						const pos = faultList.findIndex(x => keyOf(x) === key);
+						if (pos >= 0) return pos + 1;
+					}
+					// 3) 再次：对象引用匹配（同数组实例）
+					const posByRef = faultList.indexOf(f);
+					if (posByRef >= 0) {
+						const idx = posByRef + 1;
+						this.focusDebug('定位点标签索引：对象引用匹配', { index: idx });
+						return idx;
+					}
+					// 4) 兜底：基于起始时间+站点组合的弱键匹配
+					const weakKeyOf = (x) => {
+						if (!x) return '';
+						const start = String(x.start || '').trim();
+						const l1 = String(x.involvedLanding1 || '').trim();
+						const l2 = String(x.involvedLanding2 || '').trim();
+						const l3 = String(x.involvedLanding3 || '').trim();
+						return `${start}|${l1}|${l2}|${l3}`.toLowerCase();
+					};
+					const weak = weakKeyOf(f);
+					if (weak) {
+						const posWeak = faultList.findIndex(x => weakKeyOf(x) === weak);
+						if (posWeak >= 0) {
+							const idx = posWeak + 1;
+							this.focusDebug('定位点标签索引：弱键匹配', { index: idx });
+							return idx;
+						}
+					}
+					// 5) 失败则返回 0（不带“故障 i”前缀，仅显示“定位点 j/故障定位点”）
+					this.focusDebug('定位点标签索引：未命中，使用无前缀标签');
+					return 0;
+				} catch (e) { return 0; }
+			};
+			const sources = includeAll ? faultList : [fault || this.selectedFault].filter(Boolean);
+			sources.forEach(src => {
+				const i = idxOf(src);
+				const push = (coord, j = null) => {
+					if (!Array.isArray(coord) || coord.length < 2) return;
+					const name = (i > 0 && j != null)
+						? `${this.t('故障')} ${i} ${this.t('定位点')} ${j}`
+						: (j != null ? `${this.t('定位点')} ${j}` : this.t('故障定位点'));
+					pts.push({
+						coord: [Number(coord[0]), Number(coord[1])],
+						color: '#ff3b30',
+						radius: 14,
+						shape: 'diamond',
+						isFaultLocation: true,
+						name,
+						label: name,
+						labelColor: '#ffecec',
+						labelBg: 'rgba(48,8,12,0.9)',
+						labelOffset: [8, -10]
+					});
+				};
+				[['pointCoord1', 1], ['pointCoord2', 2], ['pointCoord3', 3]].forEach(([key, j]) => {
+					const c = this.displayCoordFromStr(src?.[key] || '') || null;
+					if (Array.isArray(c) && c.length >= 2) push(c, j);
+				});
+				// 手动打点也作为定位点展示，但不带 j 序号
+				const marker = this.getFaultPointMarkerCoord ? this.getFaultPointMarkerCoord() : null;
+				if (!includeAll && Array.isArray(marker) && marker.length >= 2) push(marker, null);
+			});
+			return pts;
+		},
+		localizeFaultPointLabel(point) {
+			// 功能说明：
+			// - 将故障定位点标签进行本地化处理，支持中/英双向识别；
+			// - 在 2D/3D/瓦片/聚焦/打点/实况模式下保持一致的可读性。
+			if (!point || !point.isFaultLocation) return point;
+			const clone = { ...point };
+			const localize = (nm) => {
+				if (!nm) return nm;
+				const text = String(nm);
+				const zh = text.match(/故障\s*(\d+)\s*定位点\s*(\d+)/);
+				const en = text.match(/fault\s*(\d+)\s*point\s*(\d+)/i);
+				if (zh || en) {
+					const [, fi, pj] = zh || en;
+					return `${this.t('故障')} ${fi} ${this.t('定位点')} ${pj}`;
+				}
+				if (/故障定位点/.test(text) || /fault location point/i.test(text)) return this.t('故障定位点');
+				return text;
+			};
+			const nm = localize(clone.label || clone.labelName || clone.name);
+			if (nm) {
+				clone.name = nm;
+				clone.label = nm;
+				clone.labelName = nm;
+			}
+			return clone;
+		},
+		renderTileLegend({ container, counts = {} }) {
+			try {
+				if (!container) return;
+				let box = this._tileLegendEl;
+				if (!box || !container.contains(box)) {
+					if (box && box.parentElement) { box.parentElement.removeChild(box); }
+					box = document.createElement('div');
+					box.id = 'tile-legend';
+					box.style.position = 'absolute';
+					box.style.left = '16px';
+					box.style.bottom = '18px';
+					box.style.zIndex = '34';
+					box.style.padding = '12px 14px';
+					box.style.minWidth = '200px';
+					box.style.background = 'linear-gradient(135deg, rgba(6,12,24,0.9), rgba(9,18,34,0.82))';
+					box.style.border = '1px solid rgba(72,219,251,0.35)';
+					box.style.borderRadius = '12px';
+					box.style.boxShadow = '0 12px 32px rgba(0,0,0,0.42), 0 0 18px rgba(72,219,251,0.25)';
+					box.style.backdropFilter = 'blur(4px)';
+					box.style.color = '#e8f7ff';
+					box.style.pointerEvents = 'auto';
+					const handler = (ev) => {
+						const btn = ev.target.closest('[data-legend-key]');
+						if (!btn) return;
+						const key = btn.getAttribute('data-legend-key');
+						if (!key) return;
+						const next = !(this.tileLegendFilter && this.tileLegendFilter[key] !== false);
+						this.tileLegendFilter = { ...(this.tileLegendFilter || {}), [key]: next };
+						this.updateChart();
+					};
+					box.addEventListener('click', handler);
+					this._tileLegendHandler = handler;
+					this._tileLegendEl = box;
+					container.appendChild(box);
+				}
+				const lf = this.tileLegendFilter || {};
+				const fmt = (v) => (v != null ? v : 0);
+				const itemStyle = (active) => [
+					'display:flex', 'align-items:center', 'justify-content:space-between', 'gap:10px',
+					'width:100%', 'padding:10px 12px', 'border-radius:10px', 'border:1px solid',
+					active ? 'border-color:rgba(72,219,251,0.65)' : 'border-color:rgba(255,255,255,0.08)',
+					'background:' + (active ? 'rgba(72,219,251,0.08)' : 'rgba(255,255,255,0.03)'),
+					'box-shadow:' + (active ? '0 6px 16px rgba(72,219,251,0.25)' : 'none'),
+					'color:#e8f7ff', 'font-weight:700', 'letter-spacing:0.3px', 'cursor:pointer', 'transition:all 0.18s ease'
+				].join(';');
+				const badgeStyle = (color) => `display:inline-block; width:14px; height:14px; border-radius:50%; background:${color}; box-shadow:0 0 12px ${color}55;`;
+				const countStyle = 'font-weight:800; color:#a7d8ff; font-size:13px; min-width:34px; text-align:right;';
+				const subStyle = 'font-weight:500; color:#8fb3d4; font-size:12px;';
+				const items = [
+					{ key: 'cable', label: this.t('海缆'), color: '#48dbfb', desc: this.t('常规海缆'), count: fmt(counts.cable) },
+					{ key: 'fault', label: this.t('故障海缆'), color: '#ff6b6b', desc: this.t('故障/告警'), count: fmt(counts.fault) },
+					{ key: 'landing', label: this.t('登陆站'), color: '#f8f8f8', desc: this.t('站点/标签'), count: fmt(counts.landing) },
+					{ key: 'faultLoc', label: this.t('故障定位与涉及登陆站'), color: '#ff4d4f', desc: this.t('定位/涉及站'), count: fmt(counts.faultLoc) }
+				];
+				const body = items.map(it => {
+					const active = lf[it.key] !== false;
+					return `<button type="button" data-legend-key="${it.key}" aria-pressed="${active}" style="${itemStyle(active)}">
+						<span style="display:flex; align-items:center; gap:10px;">
+							<span style="${badgeStyle(it.color)}"></span>
+							<span style="display:flex; flex-direction:column; align-items:flex-start; gap:2px;">
+								<span>${it.label}</span>
+								<span style="${subStyle}">${it.desc}</span>
+							</span>
+						</span>
+						<span style="${countStyle}">${it.count}</span>
+					</button>`;
+				}).join('');
+				box.innerHTML = `<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; gap:8px;">
+					<span style="font-weight:800; color:#a7d8ff; letter-spacing:0.4px;">瓦片图例</span>
+					<span style="${subStyle}">单击切换类别</span>
+				</div>
+				<div style="display:flex; flex-direction:column; gap:6px;">${body}</div>`;
+				box.style.display = this.legendVisible ? 'block' : 'none';
+			} catch (e) { /* noop */ }
+		},
+		destroyTileLegend() {
+			try {
+				const box = this._tileLegendEl;
+				if (box && box.parentElement) {
+					if (this._tileLegendHandler) box.removeEventListener('click', this._tileLegendHandler);
+					box.parentElement.removeChild(box);
+				}
+				this._tileLegendEl = null;
+				this._tileLegendHandler = null;
+			} catch (e) { /* noop */ }
+		},
 		openUrl(url) {
 			if (!url) return;
 			try {
@@ -5158,7 +6500,7 @@ new Vue({
 					}
 					return;
 				}
-				const url = encodeURI(`海缆数据/stationsub/${id}.json`);
+				const url = encodeURI(`seacable_data/stationsub/${id}.json`);
 				const res = await fetch(url);
 				if (!res.ok) throw new Error(`HTTP ${res.status}`);
 				const json = await res.json();
@@ -5209,7 +6551,7 @@ new Vue({
 			if (this.cablePage < this.cableTotalPages) this.cablePage += 1;
 		},
 		async computeLanding2DRebuilt() {
-			const url = encodeURI('海缆数据/landing-point-geo_v3.json');
+			const url = encodeURI('seacable_data/landing-point-geo_v3.json');
 			const res = await fetch(url, { cache: 'no-store' });
 			if (!res.ok) throw new Error(`加载登陆站总表失败: HTTP ${res.status}`);
 			const json = await res.json();
@@ -5255,7 +6597,7 @@ new Vue({
 		},
 		async loadSavedLandingAP() {
 			try {
-				const url = encodeURI('海缆数据/重构的数据/2d亚太中心登陆站数据.json');
+				const url = encodeURI('seacable_data/重构的数据/2d亚太中心登陆站数据.json');
 				const res = await fetch(url, { cache: 'no-store' });
 				if (!res.ok) return [];
 				const json = await res.json();
@@ -5266,7 +6608,7 @@ new Vue({
 		},
 		async loadSavedLandingStandard() {
 			try {
-				const url = encodeURI('海缆数据/重构的数据/2d标准地图登陆站数据.json');
+				const url = encodeURI('seacable_data/重构的数据/2d标准地图登陆站数据.json');
 				const res = await fetch(url, { cache: 'no-store' });
 				if (!res.ok) return [];
 				const json = await res.json();
@@ -5293,20 +6635,20 @@ new Vue({
 				if (!this.isGlobe) {
 					const useStandard = this.mapVersion !== 'ap-zh';
 					if (this.twoDRebuildMode === 'saved') {
-						this.notifyToast('2D 加载已保存：正在加载登陆站数据…', 'info');
+						this.notifyToast(`${this.t('2D 加载已保存')}：${this.t('正在加载登陆站数据…')}`, 'info');
 						const loaded = useStandard ? await this.loadSavedLandingStandard() : await this.loadSavedLandingAP();
 						if (Array.isArray(loaded) && loaded.length) {
 							this.landingPoints = loaded;
-							this.notifyToast('2D 加载已保存：登陆站数据加载完成', 'success');
+							this.notifyToast(`${this.t('2D 加载已保存')}：${this.t('登陆站数据加载完成')}`, 'success');
 							return;
 						}
 						const { ap, standard } = await this.computeLanding2DRebuilt();
 						this.landingPoints = useStandard ? standard : ap;
 						try {
 							const r = await this.persistLandingRebuilt(ap, standard);
-							this.notifyToast(`2D 加载已保存：未找到文件，已重算并写入（使用：${(r && r.engine) || 'php'}）`, 'success');
+								this.notifyToast(`${this.t('2D 加载已保存')}：${this.t('未找到文件，已重算并写入')}（${this.t('使用')}：${(r && r.engine) || 'php'}）`, 'success');
 						} catch (e) {
-							this.notifyToast('2D 加载已保存：登陆站保存失败，请联系管理员', 'error');
+								this.notifyToast(`${this.t('2D 加载已保存')}：${this.t('登陆站保存失败，请联系管理员')}`, 'error');
 							console.warn('保存登陆站重算结果失败', e);
 						}
 						return;
@@ -5315,15 +6657,15 @@ new Vue({
 						this.landingPoints = useStandard ? standard : ap;
 						try {
 							const r = await this.persistLandingRebuilt(ap, standard);
-							this.notifyToast(`2D 重算并保存：登陆站完成并写入（使用：${(r && r.engine) || 'php'}）`, 'success');
+							this.notifyToast(`${this.t('2D 重算并保存')}：${this.t('登陆站')} ${this.t('完成并写入')}（${this.t('使用')}：${(r && r.engine) || 'php'}）`, 'success');
 						} catch (e) {
-							this.notifyToast('2D 重算并保存：登陆站保存失败，请联系管理员', 'error');
+							this.notifyToast(`${this.t('2D 重算并保存')}：${this.t('登陆站保存失败，请联系管理员')}`, 'error');
 							console.warn('保存登陆站重算结果失败', e);
 						}
 						return;
 					}
 				}
-				const url = encodeURI('海缆数据/landing-point-geo_v3.json');
+				const url = encodeURI('seacable_data/landing-point-geo_v3.json');
 				const res = await fetch(url);
 				if (!res.ok) return;
 				const json = await res.json();
@@ -5524,7 +6866,7 @@ new Vue({
 			const key = this.mapTextureStyle in presets ? this.mapTextureStyle : 'gray';
 			return { ...presets[key], key };
 		},
-		makeOption(lines, points) {
+		makeOption(lines, points, centerOverride = null, zoomOverride = null) {
 			const theme = this.mapTextureTheme();
 			const legendCfg = this.legendVisible ? {
 				show: true,
@@ -5590,7 +6932,7 @@ new Vue({
 					const emphasisAreaColor = theme.emphasisAreaColor || '#165DFF';
 					const emphasisShadowColor = theme.emphasisShadowColor || '#48dbfb';
 					const base = {
-						map: 'world', roam: true, zoom: this.geoZoom || 1.8, center: this.mapCenter(),
+						map: 'world', roam: true, zoom: (zoomOverride != null ? zoomOverride : (this.geoZoom || 1.8)), center: (Array.isArray(centerOverride) ? centerOverride : this.mapCenter()),
 						label: { show: true, color: '#dce6ff', fontSize: 12, animationDuration: 1500, animationEasing: 'fadeIn' },
 						itemStyle: { areaColor, borderColor, borderWidth, shadowBlur: shadow, shadowColor, animationDuration: 2000 },
 						emphasis: { itemStyle: { areaColor: emphasisAreaColor, shadowBlur: Math.max(shadow + 4, 22), shadowColor: emphasisShadowColor, animationDuration: 800, animationEasing: 'elasticOut', animationLoop: true, animationDelay: 0 }, label: { color: '#fff', fontSize: 14 } },
@@ -5614,19 +6956,32 @@ new Vue({
 						coordinateSystem: 'geo',
 						zlevel: 2,
 						polyline: true,
-						effect: { show: this.lineEffectEnabled || this.focusMode === 'cable' || this.focusMode === 'fault', constantSpeed: 80, symbol: 'circle', symbolSize: 6, trailLength: 0.06, color: '#c8f7ff' },
+						effect: { show: this.lineEffectEnabled || this.focusMode === 'cable' || this.focusMode === 'fault', constantSpeed: 120, symbol: 'circle', symbolSize: 7, trailLength: 0.24, color: 'rgba(255,255,255,0.85)' },
 						animation: false,
 						lineStyle: { width: 3, opacity: 0.3, curveness: 0.15 },
 						emphasis: { lineStyle: { opacity: 1, width: 5 } },
 						data: lines
 					},
-					{ type: 'scatter', coordinateSystem: 'geo', zlevel: 3, label: { show: false }, symbolSize: 10, animation: false, itemStyle: { opacity: 0.33 }, emphasis: { scale: true, itemStyle: { opacity: 1, shadowBlur: 10, shadowColor: 'rgba(200, 247, 255, 0.7)' } }, data: points }
+					{
+						type: this.rippleEffectEnabled ? 'effectScatter' : 'scatter',
+						coordinateSystem: 'geo',
+						zlevel: 3,
+						label: { show: false },
+						symbolSize: 10,
+						animation: false,
+						itemStyle: { opacity: 0.33 },
+						emphasis: { scale: true, itemStyle: { opacity: 1, shadowBlur: 10, shadowColor: 'rgba(200, 247, 255, 0.7)' } },
+						showEffectOn: this.rippleEffectEnabled ? 'render' : undefined,
+						rippleEffect: this.rippleEffectEnabled ? { scale: 2.4, brushType: 'stroke', period: this.randomRipplePeriod(2.8, 0.7) } : undefined,
+						data: points
+					}
 				]
 			};
 		},
 		mapCenter() {
-			// 亚太中心用 140E，标准地图用 0
-			return (this.mapVersion === 'ap-zh') ? [140, 20] : [0, 20];
+			// 亚太中心默认视角：瓦片与 ap-zh 共用 140E，其他版本用 0E
+			if (this.mapVersion === 'ap-zh' || this.mapVersion === 'tiles') return [140, 20];
+			return [0, 20];
 		},
 		loadScript(url) {
 			return new Promise((resolve, reject) => {
@@ -5644,7 +6999,7 @@ new Vue({
 			// 根据地图版本加载对应底图脚本（若脚本不可用，静默回退到现有地图）
 			try {
 				const opt = this.mapVersionOptions.find(o => o.key === this.mapVersion);
-				const url = opt ? opt.script : 'js/worldZH（以中国为中心）.js';
+				const url = opt ? opt.script : (this.mapVersion === 'tiles' ? 'js/world.tiles.js' : 'js/worldZH-china-center.js');
 				await this.loadScript(url);
 			} catch (e) { /* 忽略脚本加载错误，使用现有地图 */ }
 		},
@@ -5728,10 +7083,12 @@ new Vue({
 				const color = p.itemStyle?.color || this.ownershipColor(ownership);
 				const opacity = (p.itemStyle && p.itemStyle.opacity != null) ? p.itemStyle.opacity : 0.9;
 				const size = (p.symbolSize != null) ? p.symbolSize : Math.min(18, Math.max(6, this.ownershipLandingSize(ownership)));
+				const val = Array.isArray(p.value) ? p.value : (Array.isArray(p.coord) ? p.coord : null);
 				return {
 					...p,
 					name: p.name,
-					value: p.value,
+					value: val,
+					coord: val || p.coord,
 					lpData: p.lpData,
 					detail: p.detail,
 					lineData: p.lineData,
@@ -5739,8 +7096,26 @@ new Vue({
 					symbolSize: size
 				};
 			});
-			const faultPointData = pointDataAll.filter(p => p && p.isFaultLocation);
-			const basePointData = pointDataAll.filter(p => !(p && p.isFaultLocation));
+			let faultPointData = pointDataAll.filter(p => p && p.isFaultLocation);
+			// 3D 模式下故障点可能来自多个来源，按坐标去重，优先保留含 labelName 的数据以避免重叠
+			if (this.isGlobe && faultPointData.length) {
+				const seen = new Set();
+				faultPointData = faultPointData.reduce((acc, cur) => {
+					const v = cur.value || cur.coord || [];
+					const key = Array.isArray(v) && v.length >= 2 ? `${Number(v[0]).toFixed(6)},${Number(v[1]).toFixed(6)}` : null;
+					if (key && seen.has(key)) return acc;
+					if (key) seen.add(key);
+					const name = cur.labelName || cur.name;
+					acc.push({ ...cur, name });
+					return acc;
+				}, []);
+			}
+			let basePointData = pointDataAll.filter(p => !(p && p.isFaultLocation));
+			// 3D 登陆站点击脉冲：在有效期内叠加一枚更大的高亮点增强可见性
+			if (this.landingPulseCoord && this.landingPulseUntil > Date.now()) {
+				const color = '#48dbfb';
+				basePointData = basePointData.concat([{ name: this.t('登陆站高亮'), value: this.landingPulseCoord.slice(), itemStyle: { color, opacity: 0.95 }, symbolSize: 20 }]);
+			}
 			const prevView = prevViewControl && typeof prevViewControl === 'object' ? { ...prevViewControl } : {};
 			const resolvedTarget = (Array.isArray(targetCoord) && targetCoord.length >= 2) ? targetCoord : null;
 			const existingTarget = (prevView && Array.isArray(prevView.targetCoord)) ? prevView.targetCoord : null;
@@ -5869,7 +7244,7 @@ new Vue({
 							itemStyle: { color: this.ownershipColor(label) },
 							emphasis: { focus: 'self', lineStyle: { width: 8.0, opacity: 1.0 } },
 							silent: false,
-							effect: { show: this.lineEffectEnabled || this.focusMode === 'cable' || this.focusMode === 'fault', trailWidth: 2.0, trailLength: 0.12, trailColor: '#c8f7ff' },
+							effect: { show: this.lineEffectEnabled || this.focusMode === 'cable' || this.focusMode === 'fault', trailWidth: 2.0, trailLength: 0.12, trailColor: '#ffffff' },
 							data: groups[label] || []
 						});
 						const arr = [];
@@ -5878,7 +7253,7 @@ new Vue({
 					})(),
 					{
 						id: 'lines3d-fault',
-						type: 'lines3D', coordinateSystem: 'globe', blendMode: 'source-over', name: '海缆（故障）',
+						type: 'lines3D', coordinateSystem: 'globe', blendMode: 'source-over', name: this.t('海缆（故障）'),
 						polyline: true,
 						lineStyle: { width: 3.2, opacity: 1.0, color: '#ff0000' },
 						itemStyle: { color: '#ff0000' },
@@ -5922,7 +7297,7 @@ new Vue({
 							name: `登陆站（${label}）`,
 							type: 'scatter3D', coordinateSystem: 'globe',
 							label: {
-								show: (this.focusMode !== 'none') || this.showLandingLabels,
+								show: this.shouldShowBaseLandingLabels(),
 								formatter: p => {
 									const d = p && p.data;
 									const lp = d && (d.lpData || null);
@@ -5943,6 +7318,8 @@ new Vue({
 								return Math.min(18, Math.max(6, this.ownershipLandingSize(ownership)));
 							},
 							itemStyle: { opacity: 0.9, color: this.ownershipColor(label) },
+							showEffectOn: this.rippleEffectEnabled ? 'render' : undefined,
+							rippleEffect: this.rippleEffectEnabled ? { scale: 2.4, brushType: 'stroke', period: this.randomRipplePeriod(3.0, 0.9) } : undefined,
 							emphasis: { scale: true, itemStyle: { opacity: 1, shadowBlur: 20, shadowColor: 'rgba(200, 247, 255, 0.85)' } },
 							silent: false,
 							data: groups[label]
@@ -5956,39 +7333,35 @@ new Vue({
 					{
 						id: 'scatter3d-involved',
 						type: 'scatter3D', coordinateSystem: 'globe', name: '',
-						label: {
-							show: this.focusMode === 'fault',
-							formatter: p => {
-								const d = p && p.data;
-								const lp = d && (d.lpData || null);
-								const name = lp ? this.displayLandingName(lp) : (d?.name || '');
-								return d?.distance ? `${name} ${d.distance}` : name;
-							},
-							color: '#ff9900',
-							backgroundColor: 'rgba(0,0,0,0.35)',
-							padding: [4, 6],
-							borderRadius: 4
-						},
+						label: { show: false },
 						symbol: 'circle',
 						symbolSize: 13,
 						itemStyle: { opacity: 0.95, color: '#ff9900' },
-						showEffectOn: 'render',
-						rippleEffect: { scale: 3.4, brushType: 'stroke', period: 3.0 },
+						showEffectOn: this.rippleEffectEnabled ? 'render' : undefined,
+						rippleEffect: this.rippleEffectEnabled ? { scale: 2.6, brushType: 'stroke', period: this.randomRipplePeriod(2.8, 0.9) } : undefined,
 						emphasis: { scale: true, itemStyle: { opacity: 1, shadowBlur: 16, shadowColor: 'rgba(255,153,0,0.55)' } },
 						silent: false,
 						data: (() => {
+							if (!this.hasActiveFaultLocation()) return [];
 							const src = (Array.isArray(this.faultsFromApi) && this.faultsFromApi.length) ? this.faultsFromApi : (this.displayFaults || []);
+							const target = this.selectedFault || null;
 							const out = [];
 							const norm = v => this.normalizeText(v || '').toLowerCase();
-							(src || []).forEach((f, i) => {
+							const isTargetFault = (f) => {
+								if (!target) return false;
+								if (f === target) return true;
+								if (f.faultId && target.faultId && f.faultId === target.faultId) return true;
+								return false;
+							};
+							(src || []).filter(isTargetFault).forEach((f) => {
 								for (let idx = 1; idx <= 3; idx++) {
 									const landingRaw = f[`involvedLanding${idx}`] || '';
 									const dist = f[`distance${idx}`] || '';
 									if (!landingRaw) continue;
 									const match = (this.landingPoints || []).find(lp => {
 										const names = [lp.name, this.formatLandingName(lp.name), lp.id].map(x => norm(x));
-										const target = norm(landingRaw);
-										return names.includes(target);
+										const targetName = norm(landingRaw);
+										return names.includes(targetName);
 									});
 									if (match && Array.isArray(match.coords)) {
 										out.push({ name: this.displayLandingName(match), value: match.coords, lpData: match, distance: dist });
@@ -6000,13 +7373,14 @@ new Vue({
 					},
 					{
 						id: 'scatter3d-fault',
-						type: 'scatter3D', coordinateSystem: 'globe', name: '故障定位点',
+						type: 'scatter3D', coordinateSystem: 'globe', name: this.t('故障定位点'),
 						label: {
 							show: true,
 							formatter: p => {
 								const d = p && p.data;
 								const lp = d && (d.lpData || null);
-								const name = lp ? this.displayLandingName(lp) : (d?.name || '');
+								const base = d?.labelName || d?.name || '';
+								const name = lp ? this.displayLandingName(lp) : base;
 								return d?.distance ? `${name} ${d.distance}` : name;
 							},
 							color: '#ff4d4f',
@@ -6020,7 +7394,7 @@ new Vue({
 						itemStyle: { opacity: 0.95, color: '#ff4d4f' },
 						silent: false,
 						data: faultPointData,
-						name: '故障定位点与涉及登陆站'
+						name: this.t('故障定位点与涉及登陆站')
 					}
 				]
 			};
@@ -6032,6 +7406,13 @@ new Vue({
 			}).map(s => s && s.name).filter(Boolean)));
 			baseOpt.legend = this.legendVisible ? { ...legendStyle, data: legendData } : { show: false };
 			return baseOpt;
+		},
+		// 同步“中间大标题”文案：tiles/2D/3D 统一通过覆盖层更新
+		applyTitleText(text) {
+			try {
+				const el = document.querySelector('.map-title-overlay .title-text');
+				if (el && typeof text === 'string') el.textContent = this.t(text);
+			} catch (e) { /* noop */ }
 		},
 		rebuildPoints(lines) {
 			const pts = [];
@@ -6068,15 +7449,22 @@ new Vue({
 				const isFocused = (this.focusMode === 'cable') && this.focusedFeatureId && (l.feature_id === this.focusedFeatureId);
 				const detail = this.cableDetails[l.id] || null;
 				const landings = this.normalizeLandingPoints(detail);
-				let segments = [];
-				if (this.isGlobe) {
-					segments = this.recomputeGlobeSegments(l);
-					if (!segments || !segments.length) {
-						segments = (Array.isArray(l.segments_globe) && l.segments_globe.length) ? l.segments_globe : (Array.isArray(l.coords_globe) ? [l.coords_globe] : []);
+					let segments = [];
+					if (this.isGlobe) {
+						segments = this.recomputeGlobeSegments(l);
+						if (!segments || !segments.length) {
+							segments = (Array.isArray(l.segments_globe) && l.segments_globe.length) ? l.segments_globe : (Array.isArray(l.coords_globe) ? [l.coords_globe] : []);
+						}
+					} else {
+						// 2D：优先使用预分段数据；若缺失 2D 几何且仅有球面坐标，回退为当前底图坐标系，避免故障聚焦无走线
+						segments = (Array.isArray(l.segments) && l.segments.length) ? l.segments : this.splitLineSegments(l.coords);
+						if ((!segments || !segments.length) && Array.isArray(l.coords_globe) && l.coords_globe.length) {
+							const projected = l.coords_globe
+								.map(c => this.mapCoordForDisplay(c))
+								.filter(pt => Array.isArray(pt) && pt.length === 2 && isFinite(pt[0]) && isFinite(pt[1]));
+							segments = this.splitLineSegments(projected);
+						}
 					}
-				} else {
-					segments = (Array.isArray(l.segments) && l.segments.length) ? l.segments : this.splitLineSegments(l.coords);
-				}
 				segments.forEach(seg => {
 					items.push({
 						name: l.name,
@@ -6201,15 +7589,53 @@ new Vue({
 				// IAX 故障排查：若匹配不到多分支，输出一次调试信息便于核对
 				const isIaxFault = locationCombos.some(x => normalizeCableText(x.cable).includes('india asia xpress') || normalizeCableText(x.cable).includes('iax'));
 				if (isIaxFault && lines.length < 2) {
-					console.warn('[IAX故障排查] 仅匹配到', lines.length, '条分支', {
+					// 仅在聚焦调试开启时输出，避免无关环境噪音
+					this.focusDebug('IAX 故障排查：匹配分支不足', {
+						count: lines.length,
 						fragments: locationCombos.map(x => normalizeCableText(x.cable)),
 						matched: lines.map(l => l.feature_id || l.id || l.name)
 					});
+				}
+				// 兜底：若按“涉及海缆”未匹配到走线，但提供了登陆站信息，则按登陆站关联匹配
+				if (!lines.length) {
+					const landingKeys = new Set(locationCombos.map(x => this.formatLandingName(x.landing)).filter(Boolean).map(norm));
+					if (landingKeys.size) {
+						allCandidates.forEach(ln => {
+							if (!ln) return;
+							const detail = this.cableDetails[ln.id] || ln.detail || {};
+							const landings = this.normalizeLandingPoints(detail) || [];
+							const hit = landings.some(lp => landingKeys.has(norm(lp.name)) || landingKeys.has(norm(lp.id)));
+							if (hit) addLine(ln);
+						});
+						this.focusDebug('故障聚焦兜底：按登陆站匹配走线', {
+							landingKeys: Array.from(landingKeys),
+							matched: lines.map(l => l.feature_id || l.id || l.name)
+						});
+					}
 				}
 				return lines;
 			} catch (e) {
 				return [];
 			}
+		},
+		// 汇总当前故障列表涉及的走线 ID 集，用于“仅显示故障”过滤
+		faultRelatedLineSet() {
+			const norm = (v) => String(v || '').trim().toLowerCase();
+			const set = new Set();
+			const faults = Array.isArray(this.displayFaults) ? this.displayFaults : [];
+			faults.forEach(f => {
+				(this.resolveFaultLines(f) || []).forEach(l => {
+					const key = norm(l.feature_id || l.id || l.name);
+					if (key) set.add(key);
+				});
+				for (let i = 1; i <= 3; i++) {
+					const raw = f && f[`involvedCable${i}`];
+					if (!raw) continue;
+					const key = norm(this.normalizeText(raw));
+					if (key) set.add(key);
+				}
+			});
+			return set;
 		},
 		buildFaultLines(opts = {}) {
 			try {
@@ -6232,63 +7658,94 @@ new Vue({
 				const seenSeg = new Set();
 				const color = '#ff4d4f';
 				const items = [];
-				source.forEach(f => {
-					const lines = this.resolveFaultLines(f);
-					lines.forEach(l => {
-						const key = norm(l.feature_id || l.id || l.name);
-						if (filterSet && !inSet(filterSet, l)) return;
-						let segments = [];
-						if (this.isGlobe) {
-							segments = this.recomputeGlobeSegments(l);
-							if (!segments || !segments.length) {
-								segments = (Array.isArray(l.segments_globe) && l.segments_globe.length) ? l.segments_globe : (Array.isArray(l.coords_globe) ? [l.coords_globe] : []);
+					source.forEach(f => {
+						const lines = this.resolveFaultLines(f);
+						lines.forEach(l => {
+							const key = norm(l.feature_id || l.id || l.name);
+							if (filterSet && !inSet(filterSet, l)) return;
+							let segments = [];
+							if (this.isGlobe) {
+								segments = this.recomputeGlobeSegments(l);
+								if (!segments || !segments.length) {
+									segments = (Array.isArray(l.segments_globe) && l.segments_globe.length) ? l.segments_globe : (Array.isArray(l.coords_globe) ? [l.coords_globe] : []);
+								}
+							} else {
+								const has2dSegments = Array.isArray(l.segments) && l.segments.length;
+								const has2dCoords = Array.isArray(l.coords) && l.coords.length;
+								if (has2dSegments) {
+									segments = l.segments;
+								} else if (has2dCoords) {
+									segments = this.splitLineSegments(l.coords);
+								} else {
+									// 2D 无原始几何时，使用球面坐标投影到当前底图后分段，避免普通 2D 聚焦缺少故障走线
+									const globeSegs = (Array.isArray(l.segments_globe) && l.segments_globe.length)
+										? l.segments_globe
+										: (Array.isArray(l.coords_globe) ? [l.coords_globe] : []);
+									const projected = globeSegs.map(seg => (Array.isArray(seg) ? seg.map(c => this.mapCoordForDisplay(c)).filter(Boolean) : []));
+									projected.forEach(seg => {
+										const sliced = this.splitLineSegments(seg) || [];
+										sliced.forEach(part => { if (Array.isArray(part) && part.length) segments.push(part); });
+									});
+								}
 							}
-						} else {
-							segments = (Array.isArray(l.segments) && l.segments.length) ? l.segments : this.splitLineSegments(l.coords);
-						}
-						const detail = this.cableDetails[l.id] || null;
-						const landings = this.normalizeLandingPoints(detail);
-						const highlighted = inSet(highlightSet, l);
-						segments.forEach(seg => {
-							const start = Array.isArray(seg) && seg.length ? seg[0] : [];
-							const end = Array.isArray(seg) && seg.length ? seg[seg.length - 1] : [];
-							const sig = `${key}|${start?.[0]},${start?.[1]}|${end?.[0]},${end?.[1]}|${seg.length}`;
-							if (sig && seenSeg.has(sig) && !highlightSet) return;
-							if (sig) seenSeg.add(sig);
-							items.push({
-								fault: true,
-								name: l.name,
-								coords: seg,
-								lineData: l,
-								detail,
-								landings,
-								lineStyle: {
-									color,
-									width: highlighted ? 3.6 : 3.0,
-									type: 'dashed',
-									opacity: highlighted ? 1 : 0.98,
-									curveness: 0.15,
-									shadowBlur: highlighted ? 8 : 2,
-									shadowColor: highlighted ? 'rgba(255,77,79,0.45)' : 'rgba(255,77,79,0.2)'
-								},
-								// 数据级强调：hover/highlight 时显著加粗
-								emphasis: { lineStyle: { color, width: highlighted ? 9 : 8, opacity: 1 } },
-								effect: { color }
+							const detail = this.cableDetails[l.id] || null;
+							const landings = this.normalizeLandingPoints(detail);
+							const highlighted = inSet(highlightSet, l);
+							segments.forEach(seg => {
+								const start = Array.isArray(seg) && seg.length ? seg[0] : [];
+								const end = Array.isArray(seg) && seg.length ? seg[seg.length - 1] : [];
+								const sig = `${key}|${start?.[0]},${start?.[1]}|${end?.[0]},${end?.[1]}|${seg.length}`;
+								if (sig && seenSeg.has(sig) && !highlightSet) return;
+								if (sig) seenSeg.add(sig);
+								items.push({
+									fault: true,
+									name: l.name,
+									coords: seg,
+									lineData: l,
+									detail,
+									landings,
+									lineStyle: {
+										color,
+										width: highlighted ? 3.6 : 3.0,
+										type: 'dashed',
+										opacity: highlighted ? 1 : 0.98,
+										curveness: 0.15,
+										shadowBlur: highlighted ? 8 : 2,
+										shadowColor: highlighted ? 'rgba(255,77,79,0.45)' : 'rgba(255,77,79,0.2)'
+									},
+									// 数据级强调：hover/highlight 时显著加粗
+									emphasis: { lineStyle: { color, width: highlighted ? 9 : 8, opacity: 1 } },
+									effect: { color }
+								});
 							});
 						});
 					});
-				});
 				return items;
 			} catch (e) {
 				console.warn('构建故障海缆高亮失败', e);
 				return [];
 			}
 		},
-		async focusCable(line, segCoords) {
+		async focusCable(line, segCoords, opts = {}) {
+			// 将控制参数移到 try 外，保证 finally 可访问
+			const __opts = opts || {};
+			const skipFaultRedirect = !!__opts.skipFaultRedirect;
+			const suppressFocusLoading = !!__opts.suppressFocusLoading;
 			try {
-				if (!line || !this.myChart) return;
+				if (!suppressFocusLoading) this.startFocusLoading('海缆聚焦');
+				await this.uiFlush();
+					// 进入聚焦前保存显示状态，退出时恢复；初始化视角时避免堆叠
+					if (!suppressFocusLoading) this.pushDisplayState('focus:cable');
+				const isTile = (!this.isGlobe && this.mapVersion === 'tiles');
+				this._geoUserLocked = false;
+				this._geoUserView = { center: null, zoom: null };
+				this._tileUserPanned = false;
+				this._tilePickCenterKey = null;
+				if (!line || (!isTile && !this.myChart)) return;
 				// 进入海缆聚焦时，自动关闭“显示所有故障海缆”
 				this.showFaultCablesOnMap = false;
+				// 聚焦模式自动关闭“仅显示故障”，避免过滤掉非故障叠加
+				this.faultOnlyOnMap = false;
 				// 切换海缆时关闭故障编辑面板
 				this.cancelFaultEdit();
 				// 优先以 feature_id 寻找几何；若缺失则回退 id
@@ -6303,6 +7760,14 @@ new Vue({
 				this.focusedFeatureId = canonical.feature_id; // 绘制使用 feature_id
 				this.focusMode = 'cable';
 				this.focusedFaultLineIds = [];
+				// 若该海缆涉及故障，则优先进入故障聚焦（只显示故障红线/涉及登陆站/定位点）
+				try {
+					const srcFaults = Array.isArray(this.faultsFromApi) && this.faultsFromApi.length ? this.faultsFromApi : (this.displayFaults || []);
+					const norm = v => this.normalizeText(v || '').toLowerCase();
+					const keySet = new Set([norm(canonical.id), norm(canonical.name), norm(canonical.feature_id)]);
+					const hit = srcFaults.find(f => [1,2,3].some(i => keySet.has(norm(f[`involvedCable${i}`]))));
+					if (hit && !skipFaultRedirect) { if (!suppressFocusLoading) this.finishFocusLoading(); this.focusFaultOnMap(hit); return; }
+				} catch (e) { /* noop */ }
 				// 确保依赖数据就绪：海缆详情与登陆站
 				if (canonical.id) await this.ensureCableDetail(canonical.id);
 				await this.ensureLandingPointsLoaded();
@@ -6325,8 +7790,9 @@ new Vue({
 					return segs.sort((a, b) => len(b) - len(a))[0] || baseCoords;
 				};
 				const seg = chooseSeg();
-				const xs = seg.map(c => Number(c[0])).filter(isFinite);
-				const ys = seg.map(c => Number(c[1])).filter(isFinite);
+				const segForCalc2D = this.isGlobe ? seg : (Array.isArray(seg) ? seg.map(c => this.mapCoordForDisplay(c)).filter(Boolean) : seg);
+				const xs = (this.isGlobe ? seg : segForCalc2D).map(c => Number(c[0])).filter(isFinite);
+				const ys = (this.isGlobe ? seg : segForCalc2D).map(c => Number(c[1])).filter(isFinite);
 				// 经度跨 180° 包络修正：若范围 > 180，则将负经度统一加 360 再计算中心
 				let minX = Math.min(...xs), maxX = Math.max(...xs);
 				let adjXs = xs.slice();
@@ -6337,26 +7803,45 @@ new Vue({
 				}
 				const minY = Math.min(...ys), maxY = Math.max(...ys);
 				let cx = (minX + maxX) / 2;
-				if (cx > 180) cx -= 360;
+				if (cx > 180 && this.mapVersion !== 'ap-zh') cx -= 360;
 				const cy = (minY + maxY) / 2;
 				const spanX = Math.max(1, Math.abs(maxX - minX));
 				const spanY = Math.max(1, Math.abs(maxY - minY));
 				const span = Math.max(spanX, spanY);
 				const zoom = span > 120 ? 1.8 : span > 60 ? 2.2 : span > 20 ? 2.6 : 3.2;
 				this.focusTargetCoord = [cx, cy];
-				// 移除调试输出
+				this.pendingFocusRecenter3D = this.isGlobe;
 				if (!this.isGlobe) {
 					this.geoZoom = zoom;
-					this.myChart.setOption({ geo: { center: [cx, cy], zoom: this.geoZoom } });
+					if (isTile && this.tileViewer && this.tileViewer.setCenter) {
+						this.tileViewer.setCenter([cx, cy]);
+							const targetZ = this.tileViewer.opts ? Math.max(this.tileViewer.opts.minZoom || 1, Math.min(this.tileViewer.opts.maxZoom || 7, Math.round(zoom))) : Math.round(zoom);
+						if (this.tileViewer.setZoom) this.tileViewer.setZoom(targetZ);
+					} else if (this.myChart) {
+						this.myChart.setOption({ geo: { center: [cx, cy], zoom: this.geoZoom } });
+					}
 				}
 				this.updateChart();
+				this.statesToSlider();
 			} catch (e) { console.warn('聚焦海缆失败', e); }
+			finally { if (!suppressFocusLoading) this.finishFocusLoading(); }
 		},
-		focusLanding(lp) {
+		async focusLanding(lp) {
 			try {
-				if (!lp || !Array.isArray(lp.coords) || lp.coords.length < 2 || !this.myChart) return;
+				this.startFocusLoading('登陆站聚焦');
+				await this.uiFlush();
+				// 进入聚焦前保存显示状态，退出时恢复
+				this.pushDisplayState('focus:landing');
+				const isTile = (!this.isGlobe && this.mapVersion === 'tiles');
+				this._geoUserLocked = false;
+				this._geoUserView = { center: null, zoom: null };
+				this._tileUserPanned = false;
+				this._tilePickCenterKey = null;
+				if (!lp || !Array.isArray(lp.coords) || lp.coords.length < 2 || (!isTile && !this.myChart)) return;
 				// 进入登陆站聚焦时，自动关闭“显示所有故障海缆”
 				this.showFaultCablesOnMap = false;
+				// 聚焦模式自动关闭“仅显示故障”，保障叠加信息完整
+				this.faultOnlyOnMap = false;
 				this.cancelFaultEdit();
 				this.focusedCableId = null;
 				this.focusMode = 'landing';
@@ -6365,6 +7850,17 @@ new Vue({
 				// 重置并默认全选关联海缆，且显示关联海缆
 				this.landingTooltip.selectedCableIds = [];
 				this.landingShowAssociated = true;
+				// 若该登陆站涉及故障，则优先进入故障聚焦
+				try {
+					const srcFaults = Array.isArray(this.faultsFromApi) && this.faultsFromApi.length ? this.faultsFromApi : (this.displayFaults || []);
+					const norm = v => this.normalizeText(v || '').toLowerCase();
+					const target = norm(lp.name || lp.id);
+					const hit = srcFaults.find(f => [1,2,3].some(i => {
+						const v = f[`involvedLanding${i}`];
+						return v && (norm(v) === target || norm(this.formatLandingName(v)) === target);
+					}));
+					if (hit) { this.finishFocusLoading(); this.focusFaultOnMap(hit); return; }
+				} catch (e) { /* noop */ }
 				// 预取登陆站详情以拿到关联海缆列表
 				if (lp && lp.id) {
 					this.fetchStationDetail(lp).then(() => {
@@ -6374,16 +7870,31 @@ new Vue({
 						this.updateChart();
 					}).catch(() => { });
 				}
+				// 3D 登陆站点击小动效：轻微“脉冲”增强可见性（不影响 2D）
 				this.triggerPulse();
 				const [cx, cy] = lp.coords;
 				this.focusTargetCoord = [Number(cx), Number(cy)];
+				this.pendingFocusRecenter3D = this.isGlobe;
+				if (this.isGlobe) {
+					// 记录当前登陆站坐标与过期时间，updateChart 中按需叠加高亮点
+					this.landingPulseCoord = [Number(cx), Number(cy)];
+					this.landingPulseUntil = Date.now() + 1200;
+					setTimeout(() => { this.landingPulseUntil = 0; this.landingPulseCoord = null; this.updateChart(); }, 1200);
+				}
 				if (!this.isGlobe) {
 					this.geoZoom = 3.2;
-					this.myChart.setOption({ geo: { center: [Number(cx), Number(cy)], zoom: this.geoZoom } });
+					if (isTile && this.tileViewer && this.tileViewer.setCenter) {
+						this.tileViewer.setCenter([Number(cx), Number(cy)]);
+							const targetZ = this.tileViewer.opts ? Math.max(this.tileViewer.opts.minZoom || 1, Math.min(this.tileViewer.opts.maxZoom || 7, Math.round(this.geoZoom))) : Math.round(this.geoZoom);
+						if (this.tileViewer.setZoom) this.tileViewer.setZoom(targetZ);
+					} else if (this.myChart) {
+						this.myChart.setOption({ geo: { center: [Number(cx), Number(cy)], zoom: this.geoZoom } });
+					}
 				}
 				this.updateChart();
 				this.statesToSlider();
 			} catch (e) { console.warn('聚焦登陆站失败', e); }
+			finally { this.finishFocusLoading(); }
 		},
 		focusLandingByRef(lp) {
 			if (!lp) return;
@@ -6410,12 +7921,19 @@ new Vue({
 			this.focusedFeatureId = null;
 			this.focusedLanding = null;
 			this.focusedFaultLineIds = [];
-			this.focusTargetCoord = null;
+			this.focusTargetCoord = this.mapCenter();
+			this.pendingFocusRecenter3D = false;
+			this._geoUserLocked = false;
+			this._geoUserView = { center: this.mapCenter(), zoom: this.geoZoom };
+			this._tileUserPanned = false;
+			this._tilePickCenterKey = null;
 			// 退出聚焦后清理基于登陆站的临时筛选，回到控制台筛选面板的结果
 			this.landingTooltip.selectedCableIds = [];
 			this.landingShowAssociated = false;
 			this.mapTooltipLandingExpandedId = null;
 			this.pulseExpiry = 0;
+			// 退出聚焦后恢复进入前的显示状态
+			this.restoreDisplayState();
 			if (this.myChart) {
 				const opt = this.myChart.getOption ? (this.myChart.getOption() || {}) : {};
 				const hasGeo = Array.isArray(opt.geo) ? opt.geo.length > 0 : !!opt.geo;
@@ -6424,9 +7942,15 @@ new Vue({
 					this.globeDistance = 160;
 					this.myChart.setOption({ globe: { viewControl: { targetCoord: null, distance: this.globeDistance } } });
 				} else if (!this.isGlobe && hasGeo) {
-					this.geoZoom = 1.8;
-					this.myChart.setOption({ geo: { center: [140, 20], zoom: this.geoZoom } });
+					this.geoZoom = 2.4;
+					this.myChart.setOption({ geo: { center: this.mapCenter(), zoom: this.geoZoom } });
 				}
+			}
+			// tiles：重置回默认亚太中心视角与放大
+			if (!this.isGlobe && this.mapVersion === 'tiles' && this.tileViewer) {
+				const z = this.tileViewer.opts ? Math.min(Math.max(this.tileViewer.opts.minZoom || 1, 2.8), (this.tileViewer.opts.maxZoom || 7)) : 2.8;
+				if (this.tileViewer.setCenter) this.tileViewer.setCenter(this.mapCenter());
+				if (this.tileViewer.setZoom) this.tileViewer.setZoom(z);
 			}
 			this.updateChart();
 		},
@@ -6436,6 +7960,7 @@ new Vue({
 			const landingKey = `involvedLanding${idx}`;
 			const distKey = `distance${idx}`;
 			const coordKey = `pointCoord${idx}`;
+			const remarkKey = `pointRemark${idx}`;
 			this.faultEditState = {
 				active: true,
 				index: idx,
@@ -6443,6 +7968,7 @@ new Vue({
 				landing: this.selectedFault[landingKey] || '',
 				distance: this.selectedFault[distKey] || '',
 				pointCoord: this.selectedFault[coordKey] || '',
+				remark: this.selectedFault[remarkKey] || (this.selectedFault.raw && this.selectedFault.raw[`故障点备注${idx}`]) || '',
 				picking: false,
 				pickSession: false,
 				saving: false,
@@ -6489,14 +8015,69 @@ new Vue({
 				this.clearFaultPointMarker();
 			} catch (e) { /* no-op */ }
 		},
+		// 打点浮窗下拉（右下）：选择海缆时带分步 Loading 与进度提示
+		async onPickCableChange(val) {
+			try {
+				this.faultPickLoading = true;
+				this.faultPickLoadText = this.t('1/3 预取关联数据…');
+				await this.uiFlush();
+				await this.ensureLandingPointsLoaded();
+				const raw = this.normalizeText(val || '').toLowerCase();
+				const candidate = (this.cableLines || []).find(l => {
+					const cands = [l.feature_id, l.id, l.name].map(v => this.normalizeText(v || '').toLowerCase());
+					return cands.includes(raw);
+				});
+				if (candidate && candidate.id) {
+					await this.ensureCableDetail(candidate.id);
+				}
+				// 应用变更并重置下游字段
+				this.faultEditState.cable = val || '';
+				if (this.faultEditState.landing && !(this.landingOptionsForEdit || []).includes(this.faultEditState.landing)) {
+					this.faultEditState.landing = '';
+				}
+				this.faultEditState.distance = '';
+				this.faultEditState.pointCoord = '';
+				this.clearFaultPointMarker();
+				this.faultPickLoadText = this.t('2/3 重绘点线…');
+				this.updateChart();
+				// 居中/缩放：在 2D/tiles 由 updateChart 中的打点分支自动处理
+				this.faultPickLoadText = this.t('3/3 应用居中与缩放…');
+				await new Promise(r => setTimeout(r, 180));
+			} catch (e) { /* no-op */ }
+			finally {
+				this.faultPickLoading = false;
+				this.faultPickLoadText = '';
+			}
+		},
+		// 打点浮窗下拉（右下）：选择登陆站时刷新渲染并提示进度
+		async onPickLandingChange(val) {
+			try {
+				this.faultPickLoading = true;
+				this.faultPickLoadText = this.t('1/2 写入登陆站…');
+				await this.uiFlush();
+				this.faultEditState.landing = val || '';
+				this.faultEditState.distance = '';
+				this.faultEditState.pointCoord = '';
+				this.clearFaultPointMarker();
+				this.faultPickLoadText = this.t('2/2 重绘点线…');
+				this.updateChart();
+				setTimeout(() => { this.faultPickLoading = false; this.faultPickLoadText = ''; }, 160);
+			} catch (e) {
+				this.faultPickLoading = false;
+				this.faultPickLoadText = '';
+			}
+		},
 		cancelFaultEdit() {
 			const idx = this.faultEditState.index;
-			this.faultEditState = { active: false, index: null, cable: '', landing: '', distance: '', pointCoord: '', picking: false, pickSession: false, saving: false, error: '' };
+			this.faultEditState = { active: false, index: null, cable: '', landing: '', distance: '', pointCoord: '', remark: '', picking: false, pickSession: false, saving: false, error: '' };
 			this.faultPickHover = null;
 			this.faultPickLast = null;
 			this.faultPickConfirmVisible = false;
 			this.faultPickConfirmInfo = null;
 			this.faultPickPath = null;
+			this._tileUserPanned = false;
+			this._tilePickCenterKey = null;
+			this._geoUserLocked = false;
 			if (this.selectedFault && idx) {
 				const key = `pointCoord${idx}`;
 				this.setFaultPointMarkerFromCoord(this.displayCoordFromStr(this.selectedFault[key] || ''));
@@ -6508,10 +8089,13 @@ new Vue({
 		onOutsideClickCloseFaultEdit(ev) {
 			try {
 				if (!this.faultEditState.active) return;
+				if (!ev || !ev.target || !ev.target.closest) return;
 				if (this.faultEditState.picking || this.faultEditState.pickSession || this.faultPickConfirmVisible) return;
+				// 紧凑模式：完全忽略外击关闭（避免误触导致编辑状态丢失）
+				if (this.isCompactMode) return;
 				const inSelectDropdown = ev.target.closest('.el-select-dropdown');
 				if (inSelectDropdown) return;
-				const inside = ev.target.closest('.fault-edit-overlay-inner') || ev.target.closest('.fault-detail');
+				const inside = ev.target.closest('.fault-edit-overlay-inner') || ev.target.closest('.fault-edit-overlay') || ev.target.closest('.fault-detail') || ev.target.closest('.compact-fault-overlay');
 				if (inside) return;
 				this.cancelFaultEdit();
 			} catch (e) { /* noop */ }
@@ -6521,38 +8105,40 @@ new Vue({
 				const wasPicking = !!this.faultEditState.picking;
 				const pickSession = !!this.faultEditState.pickSession;
 				if (!this.selectedFault) {
-					this.faultEditState.error = '未选择故障';
+					this.faultEditState.error = this.t('未选择故障');
 					return;
 				}
 				const idx = this.faultEditState.index;
 				if (![1, 2, 3].includes(idx)) {
-					this.faultEditState.error = '无效的编辑项';
+					this.faultEditState.error = this.t('无效的编辑项');
 					return;
 				}
 				const cableVal = (this.faultEditState.cable || '').trim();
 				const landingVal = (this.faultEditState.landing || '').trim();
 				const distVal = (this.faultEditState.distance || '').toString().trim();
 				const coordVal = (this.faultEditState.pointCoord || '').toString().trim();
+				const remarkVal = (this.faultEditState.remark || '').toString().trim();
 				if (cableVal && !this.cableNameOptions.includes(cableVal)) {
-					this.faultEditState.error = '涉及海缆需选择已有海缆';
+					this.faultEditState.error = this.t('涉及海缆需选择已有海缆');
 					return;
 				}
 				const landingOpts = this.landingOptionsForEdit;
 				if (landingVal && !landingOpts.includes(landingVal)) {
-					this.faultEditState.error = '登陆站需选择该海缆下的站点';
+					this.faultEditState.error = this.t('登陆站需选择该海缆下的站点');
 					return;
 				}
 				if (distVal && !/^-?\d+(\.\d+)?$/.test(distVal)) {
-					this.faultEditState.error = '距离需为数字（单位 km）';
+					this.faultEditState.error = this.t('距离需为数字（单位 km）');
 					return;
 				}
 				const faultId = this.selectedFault.faultId || this.selectedFault.raw?.ctrr_rsrmD_id || '';
 				if (!faultId) {
-					this.faultEditState.error = '缺少故障ID，无法提交';
+					this.faultEditState.error = this.t('缺少故障ID，无法提交');
 					return;
 				}
 				this.faultEditState.saving = true;
 				this.faultEditState.error = '';
+				// const url = 'http://127.0.0.1:808/controlRoomPrivate/index.php/customer/editFaultTable';
 				const url = `${this.authBaseUrl()}/customer/editFaultTable`;
 				const form = new URLSearchParams();
 				form.append('ctrr_rsrmD_id', faultId);
@@ -6560,10 +8146,12 @@ new Vue({
 				const landingKey = `故障涉及登陆站${idx}`;
 				const distKey = `故障点距离${idx}`;
 				const coordKey = `故障点经纬度${idx}`;
+				const remarkKey = `故障点备注${idx}`;
 				form.append(cableKey, cableVal);
 				form.append(landingKey, landingVal);
 				form.append(distKey, distVal);
 				form.append(coordKey, coordVal);
+				form.append(remarkKey, remarkVal);
 				const modifier = this.userInfo?.admin_account || this.locationParam.account || '未知';
 				form.append('大屏最近一次操作用户', modifier);
 				const res = await fetch(url, {
@@ -6578,13 +8166,16 @@ new Vue({
 				const landingProp = `involvedLanding${idx}`;
 				const distProp = `distance${idx}`;
 				const coordProp = `pointCoord${idx}`;
+				const remarkProp = `pointRemark${idx}`;
 				this.$set(this.selectedFault, cableProp, cableVal);
 				this.$set(this.selectedFault, landingProp, landingVal);
 				this.$set(this.selectedFault, distProp, distVal);
 				this.$set(this.selectedFault, coordProp, coordVal);
+				this.$set(this.selectedFault, remarkProp, remarkVal);
 				this.$set(this.selectedFault, 'lastModifier', modifier);
 				if (this.selectedFault.raw) {
 					this.$set(this.selectedFault.raw, '大屏最近一次操作用户', modifier);
+					this.$set(this.selectedFault.raw, remarkKey, remarkVal);
 				}
 				// 同步到 faultsFromApi 列表
 				const key = this.faultKey(this.selectedFault);
@@ -6596,20 +8187,26 @@ new Vue({
 							[landingProp]: landingVal,
 							[distProp]: distVal,
 							[coordProp]: coordVal,
+							[remarkProp]: remarkVal,
 							lastModifier: modifier,
-							raw: { ...(f.raw || {}), '大屏最近一次操作用户': modifier }
+							raw: { ...(f.raw || {}), '大屏最近一次操作用户': modifier, [remarkKey]: remarkVal }
 						}
 						: f
 				));
 				// 保存后立即重绘当前聚焦故障，展示最新定位点与走线
 				this.updateChart();
-				if (pickSession && this.isMapFullscreen) {
-					this.isMapFullscreen = false;
-					this.$nextTick(() => this.refreshMapAfterLayout());
+				// 保存后保持全屏与打点会话，不退出全屏
+				// 保存后继续打点：保持面板与模式不退出
+				if (wasPicking || pickSession) {
+					this.faultEditState.picking = true;
+					this.faultEditState.pickSession = pickSession;
+					this.faultPickConfirmVisible = false;
+					this.faultPickHover = null;
+				} else {
+					this.cancelFaultEdit();
 				}
-				this.cancelFaultEdit();
 			} catch (e) {
-				this.faultEditState.error = `保存失败：${e.message || e}`;
+				this.faultEditState.error = `${this.t('保存失败：')}${e.message || e}`;
 			} finally {
 				this.faultEditState.saving = false;
 			}
@@ -6734,24 +8331,547 @@ new Vue({
 		},
 		updateChart() {
 			if (this._suppressUpdate) return;
+			const picking = !!this.faultEditState.picking;
+			this.syncFocusTitleSkin(picking);
+			// tiles 模式：不走 ECharts 渲染，改为瓦片地图显示
+			if (!this.isGlobe && this.mapVersion === 'tiles') {
+				// 进入 tiles 必须移除 ECharts，避免 3D 叠在瓦片上导致空白
+				if (this.myChart) {
+					try { this.myChart.dispose(); } catch (e) { /* noop */ }
+					this.myChart = null;
+					this.chartEventTarget = null;
+				}
+				const el = this.$refs.map || document.getElementById('worldCableMap');
+				if (!el) return;
+				// 初始化或更新瓦片地图中心（优先聚焦坐标；打点态优先保持当前视图）
+				const tileCurrentCenter = (this.tileViewer && Array.isArray(this.tileViewer.center)) ? this.tileViewer.center.slice() : null;
+				const center = Array.isArray(this.focusTargetCoord) ? this.focusTargetCoord.slice() : (tileCurrentCenter || this.mapCenter());
+				const tileDefaultZoom = 2.8;
+				const normalizeTileCoord = (c) => {
+					if (!c) return null;
+					if (Array.isArray(c) && c.length >= 2) return [Number(c[0]), Number(c[1])];
+					if (typeof c.lon === 'number' && typeof c.lat === 'number') return [Number(c.lon), Number(c.lat)];
+					return null;
+				};
+				const onZoomCb = (z) => {
+					const min = 1;
+					const max = this.tileViewer?._maxZoom || this.tileViewer?.opts?.maxZoom || 7; // 瓦片资源最高 7 级
+					const t = Math.max(0, Math.min(1, (z - min) / (max - min)));
+					this.zoomSlider = Math.round(t * 100);
+				};
+				const onPanCb = (c) => {
+					if (Array.isArray(c) && c.length >= 2) {
+						this.focusTargetCoord = c.slice();
+						if (this.faultEditState.picking) this._tileUserPanned = true;
+					}
+				};
+				const handleTilePick = (coord) => {
+					if (!this.faultEditState.picking) return false;
+					const fixed = normalizeTileCoord(coord);
+					if (!fixed) {
+						this.faultEditState.error = '未能获取坐标，请重试';
+						return true;
+					}
+					this.handleTileMapPick(fixed);
+					return true;
+				};
+				const onLineClick = (line, coordObj) => {
+					if (this.faultEditState.picking) { return handleTilePick(coordObj); }
+					if (line && line.lineData) { this.focusCable(line.lineData); return true; }
+					return false;
+				};
+				const onPointClick = (pt, coordObj) => {
+					if (this.faultEditState.picking) { return handleTilePick(coordObj || pt?.coord || pt?.value); }
+					if (pt && pt.lpData) { this.focusLanding(pt.lpData); return true; }
+					if (pt && pt.lineData) { this.focusCable(pt.lineData); return true; }
+					return false;
+				};
+				const onHoverPoint = (pt, pos) => { this.showTileTooltip(pt, pos, 'point'); };
+				const onHoverLine = (line, pos) => { this.showTileTooltip(line, pos, 'line'); };
+				const onHoverNone = () => { this.hideTileTooltip(); };
+				const onMouseMove = (payload) => {
+					if (!this.faultEditState.picking) return;
+					const c = normalizeTileCoord(payload?.coord);
+					if (!c) return;
+					const res = this.computeLiveDistanceForPick(c);
+					const changed = JSON.stringify(res) !== JSON.stringify(this.faultPickHover);
+					if (res) {
+						this.faultPickHover = res;
+						this.setFaultPointMarkerFromCoord(res.coord);
+						if (changed) this.updateChart();
+					} else if (this.faultPickLast) {
+						const restoreChanged = JSON.stringify(this.faultPickLast) !== JSON.stringify(this.faultPickHover);
+						if (restoreChanged) {
+							this.faultPickHover = { ...this.faultPickLast };
+							this.setFaultPointMarkerFromCoord(this.faultPickLast.coord || null);
+							this.updateChart();
+						}
+					} else if (this.faultPickHover) {
+						this.faultPickHover = null;
+						this.setFaultPointMarkerFromCoord(null);
+						this.updateChart();
+					}
+				};
+				const onMapClick = (payload) => {
+					if (!this.faultEditState.picking) return;
+					const c = normalizeTileCoord(payload?.coord);
+					if (c) handleTilePick(c);
+				};
+				if (!this.tileViewer && window && window.TileMap) {
+					// 初始化瓦片地图：注意在打点模式下不要强制复位缩放
+					this.tileViewer = new window.TileMap(el, { basePath: 'img/tiles_world_img', center, zoom: tileDefaultZoom, minZoom: 1, maxZoom: 7, onZoom: onZoomCb, onPan: onPanCb, onLineClick, onPointClick, onHoverPoint, onHoverLine, onHoverNone, onMapClick, onMouseMove });
+				} else if (this.tileViewer && this.tileViewer.setCenter) {
+					if (this.tileViewer.opts) { this.tileViewer.opts.onZoom = onZoomCb; this.tileViewer.opts.onPan = onPanCb; this.tileViewer.opts.onLineClick = onLineClick; this.tileViewer.opts.onPointClick = onPointClick; this.tileViewer.opts.onHoverPoint = onHoverPoint; this.tileViewer.opts.onHoverLine = onHoverLine; this.tileViewer.opts.onHoverNone = onHoverNone; this.tileViewer.opts.onMapClick = onMapClick; this.tileViewer.opts.onMouseMove = onMouseMove; }
+					// 非打点态才在刷新时强制居中；打点时保持用户当前视图，避免 hover/点击触发回到亚太中心
+					if (!this.faultEditState.picking) {
+						this.tileViewer.setCenter(center);
+						if (!this.focusMode || this.focusMode === 'none') {
+							if (this.tileViewer.setZoom) this.tileViewer.setZoom(tileDefaultZoom);
+						}
+					}
+				}
+				const showCablesFlag = this.showCables || picking || this.showFaultCablesOnMap || this.focusMode === 'fault';
+				const showLandingsFlag = this.showLandings || this.focusMode === 'fault' || this.focusMode === 'landing';
+				const focusFaultSet = (this.focusMode === 'fault' && Array.isArray(this.focusedFaultLineIds) && this.focusedFaultLineIds.length)
+					? new Set(this.focusedFaultLineIds.map(v => String(v || '').trim().toLowerCase()))
+					: null;
+				const norm = (v) => String(v || '').trim().toLowerCase();
+				let cables = Array.isArray(this.filteredCablesMap) ? this.filteredCablesMap : [];
+				// 仅显示故障：基础海缆集合按涉故障走线进行过滤
+				if (this.faultOnlyOnMap) {
+					const related = this.faultRelatedLineSet();
+					if (related && related.size) {
+						const has = (l) => {
+							const keys = [l.id, l.feature_id, l.name].map(v => String(v || '').trim().toLowerCase());
+							return keys.some(k => k && related.has(k));
+						};
+						cables = cables.filter(l => has(l));
+					}
+				}
+				const showBaseLandingLabels = this.shouldShowBaseLandingLabels();
+				const landingLabelOf = (lp) => {
+					if (!showBaseLandingLabels) return '';
+					if (lp) return this.displayLandingName(lp) || this.normalizeText(lp.name || '');
+					return '';
+				};
+				// 瓦片叠加层：基础走线样式（权益配色）
+				const decorateToOverlay = (arr) => (arr || []).map(item => ({
+					coords: item.coords,
+					color: (item.lineStyle && item.lineStyle.color) || 'rgba(0,180,255,0.65)',
+					width: (item.lineStyle && item.lineStyle.width) || 1.2,
+					opacity: (item.lineStyle && item.lineStyle.opacity != null) ? item.lineStyle.opacity : 0.7,
+					dash: (item.lineStyle && item.lineStyle.type === 'dashed') ? [8, 6] : [],
+					lineData: item.lineData || null
+				}));
+				// 瓦片叠加层：故障走线的警示效果（双层发光 + 高速虚线）
+				const decorateFaultOverlay = (arr) => (arr || []).map(item => {
+					const w = (item.lineStyle && item.lineStyle.width) || 2.2;
+					return {
+						coords: item.coords,
+						// 故障走线使用纯红色以增强警示性（tiles 模式）
+						color: '#ff0000',
+						width: Math.max(2.2, w * 1.1),
+						opacity: 0.95,
+						dash: [14, 12],
+						lineData: item.lineData || null,
+						fault: true,
+						glowColor: 'rgba(255,0,0,0.72)',
+						haloColor: 'rgba(255,0,0,0.26)',
+						haloWidth: Math.max(3.6, w * 2.4),
+						dashSpeed: 0.06,
+						innerColor: '#ffe0e0',
+						innerWidth: Math.max(1.4, w * 0.7),
+						cap: 'round'
+					};
+				});
+				// 瓦片叠加层：故障定位 1/2/3 标签 + 定位 pin（复用 2D 色彩）
+				const buildTileFaultLocPoint = (p) => ({
+					coord: p.value,
+					color: '#ff7fb3', // 与 2D 故障定位一致的粉色
+					radius: 9.4,
+					lpData: p.lpData || null,
+					isFaultLanding: true,
+					isFaultLocation: true,
+					shape: 'diamond',
+					label: this.formatFaultLocationLabel(p),
+					labelColor: '#ffe8f1',
+					labelBg: 'rgba(48,8,12,0.9)',
+					labelOffset: [10, -12],
+					distance: p.distance,
+					name: p.name || '',
+					ripple: this.rippleEffectEnabled
+				});
+				const makeLandingPoint = (p) => ({
+					coord: p.value,
+					color: (p.itemStyle && p.itemStyle.color) || '#f8f8f8',
+					radius: 5.6, // 登陆站点基础尺寸略降，涟漪更克制
+					lpData: p.lpData || null,
+					label: landingLabelOf(p.lpData || p),
+					labelOffset: [8, -8],
+					ripple: this.rippleEffectEnabled
+				});
+				let overlayLines = [];
+				let overlayPoints = [];
+				if (picking) {
+					const editLine = this.findCableByEditName(this.faultEditState.cable || '');
+					if (editLine) {
+						const decor = this.decorateLines([editLine]) || [];
+						overlayLines = decor.map(item => ({
+							coords: item.coords,
+							color: '#ff4d4f',
+							width: Math.max(2.4, (item.lineStyle && item.lineStyle.width) || 1.8),
+							opacity: 1,
+							dash: [10, 8],
+							lineData: item.lineData || null
+						}));
+						overlayPoints = (this.buildLandingPointsForLine(editLine) || []).map(makeLandingPoint);
+						if (Array.isArray(editLine.coords) && editLine.coords.length) {
+							const xs = editLine.coords.map(c => Number(c[0])).filter(isFinite);
+							const ys = editLine.coords.map(c => Number(c[1])).filter(isFinite);
+							if (xs.length && ys.length) {
+								const pickKey = `pick:${norm(editLine.id)}:${norm(this.faultEditState.landing)}`;
+								if (!this._tileUserPanned && this._tilePickCenterKey !== pickKey) {
+									this.focusTargetCoord = [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+									if (this.tileViewer && this.tileViewer.setCenter) this.tileViewer.setCenter(this.focusTargetCoord.slice());
+									this._tilePickCenterKey = pickKey;
+								}
+							}
+						}
+						const faultFilter = new Set([norm(editLine.id), norm(editLine.feature_id), norm(editLine.name)].filter(Boolean));
+						const faultLinesFocus = this.buildFaultLines({ filterSet: faultFilter, highlightSet: faultFilter }) || [];
+						overlayLines = overlayLines.concat(decorateFaultOverlay(faultLinesFocus));
+					}
+					// 仅在线上显示打点预览点；不在走线时取消预览点
+					const markerCoord = this.getFaultPointMarkerCoord();
+					if (markerCoord) {
+						const previewLabel = (this.faultPickHover && this.faultPickHover.distanceKm != null)
+							? `预览 ${Number(this.faultPickHover.distanceKm).toFixed(2)} km`
+							: '打点预览';
+						overlayPoints.push({
+							coord: markerCoord,
+							color: '#ff7fb3',
+							radius: 8.5,
+							shape: 'diamond',
+							icon: 'locator',
+							label: previewLabel,
+							labelColor: '#ffe8f1',
+							labelBg: 'rgba(48,8,12,0.88)',
+							labelOffset: [10, -10],
+							ripple: this.rippleEffectEnabled
+						});
+					}
+					// 绿色预览线：优先鼠标悬停路径，其次上次点击路径，再次已确认打点路径，最后无
+					let previewPath = null;
+					if (this.faultPickHover && Array.isArray(this.faultPickHover.path)) {
+						previewPath = this.faultPickHover.path;
+					} else if (this.faultPickLast && Array.isArray(this.faultPickLast.path)) {
+						previewPath = this.faultPickLast.path;
+					} else if (Array.isArray(this.faultPickPath)) {
+						previewPath = this.faultPickPath;
+					}
+					if (Array.isArray(previewPath) && previewPath.length > 1) {
+						overlayLines.push({
+							coords: previewPath,
+							color: '#00e5aa',
+							width: 3.0,
+							opacity: 0.95,
+							dash: [],
+							cap: 'round'
+						});
+						// 外侧微弱光晕增强可读性
+						overlayLines.push({
+							coords: previewPath,
+							color: 'rgba(0,229,170,0.25)',
+							width: 6.2,
+							opacity: 0.6,
+							dash: [],
+							cap: 'round'
+						});
+					}
+				} else if (this.focusMode === 'cable' && (this.focusedFeatureId || this.focusedCableId)) {
+					const focusKey = norm(this.focusedFeatureId || this.focusedCableId);
+					const is2Africa = focusKey.includes('2africa');
+					const isIax = focusKey.includes('india asia xpress') || focusKey.includes('iax');
+					const pool = cables.length ? cables : (Array.isArray(this.cableLines) ? this.cableLines : []);
+					const pickBaseLine = () => {
+						if (is2Africa) return pool.find(l => norm(l.name).includes('2africa')) || null;
+						if (isIax) {
+							const byIaxName = pool.find(l => {
+								const n = norm(l.name);
+								return n.includes('india asia xpress') || n.includes('iax');
+							});
+							if (byIaxName) return byIaxName;
+						}
+						const byFeature = pool.find(l => l.feature_id && norm(l.feature_id) === focusKey);
+						if (byFeature) return byFeature;
+						const byId = pool.find(l => l.id && norm(l.id) === focusKey);
+						if (byId) return byId;
+						return pool.find(l => norm(l.name) === focusKey) || null;
+					};
+					const focusLine = pickBaseLine();
+					if (focusLine) {
+						const siblings = (() => {
+							if (is2Africa) {
+								return pool.filter(l => norm(l.name).includes('2africa') || (focusLine.id && norm(l.id) === norm(focusLine.id)));
+							}
+							if (isIax) {
+								const fid = norm(focusLine.feature_id);
+								const id = norm(focusLine.id);
+								return pool.filter(l => {
+									const n = norm(l.name);
+									return n.includes('india asia xpress') || n.includes('iax') || (fid && norm(l.feature_id) === fid) || (id && norm(l.id) === id);
+								});
+							}
+							const fid = norm(focusLine.feature_id);
+							const id = norm(focusLine.id);
+							return pool.filter(l => (fid && norm(l.feature_id) === fid) || (id && norm(l.id) === id));
+						})();
+						const drawLines = siblings.length ? siblings : [focusLine];
+						overlayLines = decorateToOverlay(this.decorateLines(drawLines));
+						overlayPoints = (this.buildLandingPointsForLine(focusLine) || []).map(makeLandingPoint);
+						const faultFilter = new Set();
+						drawLines.forEach(dl => {
+							faultFilter.add(norm(dl.id));
+							faultFilter.add(norm(dl.feature_id));
+							faultFilter.add(norm(dl.name));
+						});
+						if (faultFilter.size) {
+							const faultLinesFocus = this.buildFaultLines({ filterSet: faultFilter, highlightSet: faultFilter }) || [];
+							overlayLines = overlayLines.concat(decorateFaultOverlay(faultLinesFocus));
+						}
+						// 根据聚焦对象长度自适应缩放（仅在聚焦对象变化时生效，避免打断用户拖拽）
+						try {
+							const keyNow = `cable:${focusKey}`;
+							if (this.tileViewer && this.tileViewer.setCenter && this.tileViewer.setZoom && this._tileFocusKey !== keyNow) {
+								const coords = [];
+								drawLines.forEach(l => Array.isArray(l.coords) && coords.push(...l.coords));
+								if (coords.length) {
+									const xs = coords.map(c => Number(c[0])).filter(isFinite);
+									const ys = coords.map(c => Number(c[1])).filter(isFinite);
+									if (xs.length && ys.length) {
+										const minX = Math.min(...xs), maxX = Math.max(...xs);
+										const minY = Math.min(...ys), maxY = Math.max(...ys);
+										const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+										const spanX = Math.max(1, Math.abs(maxX - minX));
+										const spanY = Math.max(1, Math.abs(maxY - minY));
+										const span = Math.max(spanX, spanY);
+										const minZ = this.tileViewer.opts?.minZoom || 1;
+										const maxZ = this.tileViewer.opts?.maxZoom || 7;
+										const tZ = span > 220 ? 2.0 : span > 140 ? 2.3 : span > 90 ? 2.6 : span > 50 ? 3.0 : span > 30 ? 3.4 : 3.9;
+										const z = Math.max(minZ, Math.min(maxZ, tZ));
+										this.tileViewer.setCenter([cx, cy]);
+										this.tileViewer.setZoom(z);
+										this._tileFocusKey = keyNow;
+									}
+								}
+							}
+						} catch (e) { /* noop */ }
+					}
+				} else if (this.focusMode === 'landing' && this.focusedLanding) {
+					const visSet = (this.landingTooltip && Array.isArray(this.landingTooltip.selectedCableIds) && this.landingTooltip.selectedCableIds.length)
+						? new Set(this.landingTooltip.selectedCableIds.map(v => norm(v)))
+						: null;
+					const baseLines = visSet
+						? cables.filter(l => {
+							const keys = [l.id, l.name, l.feature_id].map(norm);
+							return keys.some(k => k && visSet.has(k));
+						})
+						: cables;
+					overlayLines = decorateToOverlay(this.decorateLines(baseLines));
+					overlayPoints = [{
+						coord: this.focusedLanding.coords,
+						color: this.ownershipColor(this.focusedLanding.ownership || '非权益'),
+						radius: 4,
+						lpData: this.focusedLanding,
+						label: landingLabelOf(this.focusedLanding),
+						labelOffset: [8, -8]
+					}];
+						const matchLanding = (f) => {
+							const target = norm(this.focusedLanding.name);
+							const targetFmt = norm(this.formatLandingName(this.focusedLanding.name));
+							for (let i = 1; i <= 3; i++) {
+								const lv = norm(f[`involvedLanding${i}`]);
+								if (lv && (lv === target || lv === targetFmt)) return true;
+							}
+							return false;
+						};
+						const faultFilter = new Set();
+						(this.displayFaults || []).forEach(f => {
+							if (!f || !matchLanding(f)) return;
+							const related = this.resolveFaultLines(f) || [];
+							related.forEach(l => faultFilter.add(norm(l.feature_id || l.id || l.name)));
+						});
+						if (faultFilter.size) {
+							const faultLinesLanding = this.buildFaultLines({ filterSet: faultFilter, highlightSet: faultFilter }) || [];
+							overlayLines = overlayLines.concat(decorateFaultOverlay(faultLinesLanding));
+						}
+						// 登陆站聚焦：根据关联走线自适应缩放（只在对象变化时生效）
+						try {
+							const keyNow = `landing:${norm(this.focusedLanding.id || this.focusedLanding.name)}`;
+							if (this.tileViewer && this.tileViewer.setCenter && this.tileViewer.setZoom && this._tileFocusKey !== keyNow) {
+								let coords = [];
+								if (baseLines && baseLines.length) baseLines.forEach(l => Array.isArray(l.coords) && coords.push(...l.coords));
+								if (!coords.length && Array.isArray(this.focusedLanding.coords)) coords = [this.focusedLanding.coords];
+								if (coords.length) {
+									const xs = coords.map(c => Number(c[0])).filter(isFinite);
+									const ys = coords.map(c => Number(c[1])).filter(isFinite);
+									if (xs.length && ys.length) {
+										const minX = Math.min(...xs), maxX = Math.max(...xs);
+										const minY = Math.min(...ys), maxY = Math.max(...ys);
+										const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+										const spanX = Math.max(1, Math.abs(maxX - minX));
+										const spanY = Math.max(1, Math.abs(maxY - minY));
+										const span = Math.max(spanX, spanY);
+										const minZ = this.tileViewer.opts?.minZoom || 1;
+										const maxZ = this.tileViewer.opts?.maxZoom || 7;
+										const tZ = span > 160 ? 2.2 : span > 90 ? 2.6 : span > 40 ? 3.0 : span > 20 ? 3.6 : 4.2;
+										const z = Math.max(minZ, Math.min(maxZ, tZ));
+										this.tileViewer.setCenter([cx, cy]);
+										this.tileViewer.setZoom(z);
+										this._tileFocusKey = keyNow;
+									}
+								}
+							}
+						} catch (e) { /* noop */ }
+				} else if (this.focusMode === 'fault' && this.selectedFault) {
+					const faultLines = this.buildFaultLines({ filterSet: focusFaultSet, highlightSet: focusFaultSet }) || [];
+					overlayLines = decorateFaultOverlay(faultLines);
+					const faultLandingPts = (this.buildFaultLocationPoints(this.selectedFault) || []).map(buildTileFaultLocPoint).map(p => this.localizeFaultPointLabel(p));
+					overlayPoints = faultLandingPts;
+					const faultLocIcon = (this.collectFaultLocationIcons(this.selectedFault) || []).map(pt => this.localizeFaultPointLabel({ ...pt, ripple: this.rippleEffectEnabled }));
+					overlayPoints.push(...faultLocIcon);
+				} else {
+					overlayLines = showCablesFlag ? decorateToOverlay(this.decorateLines(cables)) : [];
+					if (showCablesFlag && (this.showFaultCablesOnMap || this.focusMode === 'fault')) {
+						const faultLines = this.buildFaultLines({ highlightSet: focusFaultSet }) || [];
+						overlayLines.push(...decorateFaultOverlay(faultLines));
+					}
+					overlayPoints = showLandingsFlag
+						? (this.buildLandingPointsForMap(cables) || []).map(makeLandingPoint)
+						: [];
+					const faultLoc = this.selectedFault ? this.buildFaultLocationPoints(this.selectedFault) : this.buildAllFaultLocationPoints();
+					const faultLocPoints = faultLoc.map(buildTileFaultLocPoint).map(p => this.localizeFaultPointLabel(p));
+					overlayPoints.push(...faultLocPoints);
+					const faultLocIcon = (this.collectFaultLocationIcons(this.selectedFault, true) || []).map(pt => this.localizeFaultPointLabel({ ...pt, ripple: this.rippleEffectEnabled }));
+					overlayPoints.push(...faultLocIcon);
+				}
+				// “仅显示故障”：瓦片模式仅保留故障走线与故障定位点，不显示额外登陆站
+				if (this.faultOnlyOnMap && !picking) {
+					const faultLinesOnly = this.buildFaultLines({ highlightSet: focusFaultSet }) || [];
+					overlayLines = decorateFaultOverlay(faultLinesOnly);
+					const faultLocAll = this.buildAllFaultLocationPoints();
+					const faultLocPointsAll = faultLocAll.map(buildTileFaultLocPoint).map(p => this.localizeFaultPointLabel(p));
+					const faultLocIconAll = (this.collectFaultLocationIcons(null, true) || []).map(pt => this.localizeFaultPointLabel({ ...pt, ripple: this.rippleEffectEnabled }));
+					overlayPoints = faultLocPointsAll.concat(faultLocIconAll);
+				}
+				const lf = this.tileLegendFilter || {};
+				const allowCable = lf.cable !== false;
+				const allowFault = lf.fault !== false;
+				const allowLanding = lf.landing !== false;
+				const allowFaultLoc = lf.faultLoc !== false;
+				overlayLines = overlayLines.filter(l => {
+					if (l && l.fault) return allowFault;
+					return allowCable;
+				});
+				// 走线特效与涟漪开关：瓦片叠加的虚线流光遵循开关
+				if (!this.lineEffectEnabled) {
+					overlayLines = overlayLines.map(l => ({ ...l, dashSpeed: 0, glowColor: l.glowColor, haloColor: l.haloColor }));
+				}
+				overlayPoints = overlayPoints.filter(p => {
+					if (p && p.isFaultLocation) return allowFaultLoc;
+					return allowLanding;
+				});
+				// 覆盖层更新：点线与图例
+				if (this.tileViewer && this.tileViewer.setOverlayData) {
+					this.tileViewer.setOverlayData({ lines: overlayLines, points: overlayPoints });
+				}
+				if (!this.isGlobe && this.mapVersion === 'tiles' && this.legendVisible) {
+					this.renderTileLegend({
+						container: el,
+						counts: {
+							cable: overlayLines.filter(l => l && !l.fault).length,
+							fault: overlayLines.filter(l => l && l.fault).length,
+							landing: overlayPoints.filter(p => p && !p.isFaultLocation).length,
+							faultLoc: overlayPoints.filter(p => p && p.isFaultLocation).length
+						}
+					});
+				} else {
+					this.destroyTileLegend();
+				}
+				// 同步标题：主标题用于 tiles 聚焦；打点模式使用独立纯文本标题
+				try {
+					if (picking) {
+						// 打点模式：主标题保持原样，仅在瓦片上方显示纯文本说明
+						const pickTitle = `${this.t('故障打点模式')} ｜ ${this.t('仅沿涉及海缆走线打点')} ｜ ${this.t('当前海缆：')}${this.faultEditState.cable || this.t('未选择')} ｜ ${this.t('起点登陆站：')}${this.faultEditState.landing || this.t('未选择')}`;
+						this.setTilePickTitle(pickTitle);
+						// 恢复主标题文本为默认
+						this.applyTitleText(this.t('全球海缆运行状态总览'));
+					} else {
+						this.setTilePickTitle('');
+						let tileTitle = this.t('全球海缆运行状态总览');
+						if (this.focusMode === 'fault' && this.selectedFault) {
+							tileTitle = this.faultFocusLabel(this.selectedFault);
+						} else if (this.focusMode === 'cable' && (this.focusedFeatureId || this.focusedCableId)) {
+							tileTitle = this.displayCableName(this.findCableByEditName(this.focusedFeatureId || this.focusedCableId) || {}) || '海缆';
+						} else if (this.focusMode === 'landing' && this.focusedLanding) {
+							tileTitle = this.displayLandingName(this.focusedLanding) || '登陆站';
+						}
+						this.applyTitleText(tileTitle);
+					}
+				} catch (e) { /* noop */ }
+				this.hideTileTooltip();
+				this.mapLoading = false;
+				this.mapLoadingText = '';
+				return;
+			}
 			this.ensureChartInstance();
 			if (!this.myChart) return;
 			// 更新图表
 			let lines = [];
 			let points = [];
-			const picking = !!this.faultEditState.picking;
 			const pickingLine = picking ? this.findCableByEditName(this.faultEditState.cable || '') : null;
 			// 当开启“显示故障海缆”时，即便关闭常规海缆，也要确保故障走线能画出来
-			const showCablesFlag = this.showCables || picking || this.showFaultCablesOnMap;
-			const showLandingsFlag = this.showLandings || picking;
+			const showCablesFlag = this.showCables || picking || this.showFaultCablesOnMap || this.focusMode === 'fault';
+			const showLandingsFlag = this.showLandings || picking || this.focusMode === 'fault';
+			const normId = (v) => String(v || '').trim().toLowerCase();
 			const pickLandingName = this.normalizeText(this.faultEditState.landing || '').toLowerCase();
 			const focusFaultSet = (this.focusMode === 'fault' && Array.isArray(this.focusedFaultLineIds) && this.focusedFaultLineIds.length)
 				? new Set(this.focusedFaultLineIds.map(v => String(v || '').trim().toLowerCase()).filter(Boolean))
 				: null;
+			// 新增：按走线 ID 集过滤并收集相关故障，供“故障优先渲染”在海缆/登陆站聚焦下使用
+			const collectFaultsByFilterSet = (set) => {
+				if (!set || !set.size) return [];
+				return (this.displayFaults || []).filter(f => {
+					const lines = this.resolveFaultLines(f) || [];
+					return lines.some(l => set.has(normId(l.feature_id || l.id || l.name)));
+				});
+			};
+			// 新增：将涉及登陆站与“故障定位点(1/2/3)”合并为统一点集，跨模式保持标签可见
+			const buildFaultPointsForFaults = (faults) => {
+				if (!Array.isArray(faults) || !faults.length) return [];
+				const seen = new Set();
+				const list = [];
+				faults.forEach(f => {
+					const landingPts = this.buildFaultLocationPoints(f) || [];
+					const iconPts = (this.collectFaultLocationIcons(f, false) || []).map(pt => {
+						const coord = pt.coord || pt.value;
+						return { ...pt, value: coord || pt.value, coord: coord || pt.coord, isFaultLocation: true };
+					});
+					[...landingPts, ...iconPts].forEach(p => {
+						const coord = p.value || p.coord;
+						const key = Array.isArray(coord) ? `${Number(coord[0]).toFixed(6)},${Number(coord[1]).toFixed(6)}` : null;
+						if (key && seen.has(key)) return;
+						if (key) seen.add(key);
+						list.push(p);
+					});
+				});
+				return list;
+			};
 			let faultLines = (this.showFaultCablesOnMap && showCablesFlag && !picking) ? this.buildFaultLines({ highlightSet: focusFaultSet }) : [];
 			let pulseCable = false;
 			let pulseLanding = false;
-			let titleText = '全球海缆运行状态总览';
+			let titleText = this.t('全球海缆运行状态总览');
+			const buildPickTitle = () => `${this.t('故障打点模式')}  ｜  ${this.t('仅沿涉及海缆走线打点')}  ｜  ${this.t('当前海缆：')}${this.faultEditState.cable || this.t('未选择')}  ｜  ${this.t('起点登陆站：')}${this.faultEditState.landing || this.t('未选择')}`;
 			let targetCoord = this.focusTargetCoord;
 			if (picking) {
 				// 故障打点模式：仅沿涉及海缆打点
@@ -6764,7 +8884,7 @@ new Vue({
 				}));
 				points = editLine ? (this.buildLandingPointsForLine(editLine) || []) : [];
 				pulseLanding = true;
-				titleText = `故障打点模式  ｜  仅沿涉及海缆走线打点  ｜  当前海缆：${this.faultEditState.cable || '未选择'}  ｜  起点登陆站：${this.faultEditState.landing || '未选择'}`;
+				titleText = buildPickTitle();
 				faultLines = [];
 				if (editLine && Array.isArray(editLine.coords) && editLine.coords.length) {
 					const xs = editLine.coords.map(c => Number(c[0])).filter(isFinite);
@@ -6785,6 +8905,7 @@ new Vue({
 				const focusLineSet = (focusFaultSet && focusFaultSet.size)
 					? focusFaultSet
 					: (resolvedLines.length ? new Set(resolvedLines.map(l => this.normalizeText(l.feature_id || l.id || l.name))) : null);
+				const faultIdxLabel = this.faultFocusLabel(fault);
 				if (!hasCoords && !hasCables && !hasLandings) {
 					// 无任何可绘制数据：仍进入聚焦，但清空并回到亚太中心
 					lines = [];
@@ -6792,35 +8913,31 @@ new Vue({
 					faultLines = [];
 					pulseCable = false;
 					pulseLanding = false;
-					titleText = fault ? (this.faultTitle(fault) || '故障') : '故障';
+					titleText = faultIdxLabel;
 					const fallbackCoord = [120, 20];
 					targetCoord = fallbackCoord;
 					this.focusTargetCoord = fallbackCoord;
 					if (this.isGlobe && this.myChart) {
 						try { this.myChart.setOption({ globe: { viewControl: { targetCoord: fallbackCoord } } }, false); } catch (e) { /* noop */ }
-					} else if (this.myChart) {
+					} else if (this.myChart && !this._geoUserLocked) {
 						try { this.myChart.setOption({ geo: { center: fallbackCoord, zoom: this.geoZoom || 1.8 } }, false); } catch (e) { /* noop */ }
 					}
 				} else if (focusLineSet && focusLineSet.size) {
 					const focusLines = this.buildFaultLines({ filterSet: focusLineSet, highlightSet: focusLineSet });
 					lines = focusLines;
-					// 故障聚焦：只绘制筛选后的故障线
-					const landingPts = [];
-					focusLines.forEach(item => {
-						if (!item || !item.lineData) return;
-						const pts = this.buildLandingPointsForLine(item.lineData) || [];
-						if (pts.length) landingPts.push(...pts);
-					});
-					const faultLocPts = this.buildFaultLocationPoints(this.selectedFault);
-					if (faultLocPts.length) landingPts.push(...faultLocPts);
-					points = landingPts;
+					// 故障聚焦：仅显示该故障涉及登陆站 + 定位点
+					const involvedLandingPts = this.buildFaultLocationPoints(this.selectedFault) || [];
+					const faultLocIcons = (this.collectFaultLocationIcons(this.selectedFault, false) || []).map(pt => this.localizeFaultPointLabel({ ...pt, isFaultLocation: true }));
+					points = involvedLandingPts.concat(faultLocIcons);
 					pulseCable = true;
-					titleText = this.selectedFault ? this.faultTitle(this.selectedFault) : '故障';
+					titleText = faultIdxLabel;
 					const coords = [];
 					focusLines.forEach(item => { if (Array.isArray(item?.coords)) coords.push(...item.coords); });
-					if (coords.length) {
-						const xs = coords.map(c => Number(c[0])).filter(isFinite);
-						const ys = coords.map(c => Number(c[1])).filter(isFinite);
+					// 2D 聚焦包络也需要按当前底图经度体系转换
+					const coordsForBounds = this.isGlobe ? coords : coords.map(c => this.mapCoordForDisplay(c)).filter(Boolean);
+					if (coordsForBounds.length) {
+						const xs = coordsForBounds.map(c => Number(c[0])).filter(isFinite);
+						const ys = coordsForBounds.map(c => Number(c[1])).filter(isFinite);
 						if (xs.length && ys.length) {
 							let minX = Math.min(...xs), maxX = Math.max(...xs);
 							let adjXs = xs.slice();
@@ -6831,7 +8948,7 @@ new Vue({
 							}
 							const minY = Math.min(...ys), maxY = Math.max(...ys);
 							let cx = (minX + maxX) / 2;
-							if (cx > 180) cx -= 360;
+							if (cx > 180 && this.mapVersion !== 'ap-zh') cx -= 360;
 							const cy = (minY + maxY) / 2;
 							targetCoord = [cx, cy];
 							this.focusTargetCoord = targetCoord;
@@ -6839,7 +8956,7 @@ new Vue({
 							const spanY = Math.max(1, Math.abs(maxY - minY));
 							const span = Math.max(spanX, spanY);
 							const zoom = span > 120 ? 1.8 : span > 60 ? 2.2 : span > 20 ? 2.6 : 3.2;
-							if (!this.isGlobe) {
+							if (!this.isGlobe && !this._geoUserLocked) {
 								this.geoZoom = zoom;
 								this.myChart.setOption({ geo: { center: [cx, cy], zoom: this.geoZoom } });
 							}
@@ -6853,16 +8970,17 @@ new Vue({
 					points = faultLocPts;
 					pulseCable = false;
 					pulseLanding = true;
-					titleText = fault ? (this.faultTitle(fault) || '故障') : '故障';
+					titleText = faultIdxLabel;
 					if (faultLocPts.length) {
-						const xs = faultLocPts.map(p => Number((p && p.value && p.value[0]) || 0)).filter(isFinite);
-						const ys = faultLocPts.map(p => Number((p && p.value && p.value[1]) || 0)).filter(isFinite);
+						const calcPts = this.isGlobe ? faultLocPts : faultLocPts.map(p => ({ ...p, value: this.mapCoordForDisplay(p.value) || p.value })).filter(p => Array.isArray(p.value));
+						const xs = calcPts.map(p => Number((p && p.value && p.value[0]) || 0)).filter(isFinite);
+						const ys = calcPts.map(p => Number((p && p.value && p.value[1]) || 0)).filter(isFinite);
 						if (xs.length && ys.length) {
 							const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
 							const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
 							targetCoord = [cx, cy];
 							this.focusTargetCoord = targetCoord;
-							if (!this.isGlobe && this.myChart) {
+							if (!this.isGlobe && this.myChart && !this._geoUserLocked) {
 								this.geoZoom = 2.8;
 								this.myChart.setOption({ geo: { center: [cx, cy], zoom: this.geoZoom } }, false);
 							} else if (this.isGlobe && this.myChart) {
@@ -6924,6 +9042,24 @@ new Vue({
 					points = allPts;
 					pulseCable = true;
 					titleText = this.displayCableName(baseLine) || '海缆';
+					const faultFilter = new Set();
+					drawLines.forEach(dl => {
+						faultFilter.add(normId(dl.id));
+						faultFilter.add(normId(dl.feature_id));
+						faultFilter.add(normId(dl.name));
+					});
+					const relatedFaults = faultFilter.size ? collectFaultsByFilterSet(faultFilter) : [];
+					if (faultFilter.size) {
+						const faultLinesFocus = this.buildFaultLines({ filterSet: faultFilter, highlightSet: faultFilter }) || [];
+						if (relatedFaults.length) {
+							lines = faultLinesFocus;
+							const faultPoints = buildFaultPointsForFaults(relatedFaults);
+							points = faultPoints.length ? faultPoints : [];
+							pulseLanding = true;
+						} else {
+							lines = lines.concat(faultLinesFocus);
+						}
+					}
 					// 计算聚焦中心：优先用装饰后的最长分段，其次用原始几何（2D/3D按模式）
 					const segLen = (arr) => {
 						if (!Array.isArray(arr) || arr.length < 2) return 0;
@@ -6950,8 +9086,9 @@ new Vue({
 						}
 					}
 					if (Array.isArray(seg) && seg.length) {
-						const xs = seg.map(c => Number(c[0])).filter(isFinite);
-						const ys = seg.map(c => Number(c[1])).filter(isFinite);
+						const segForCalc = this.isGlobe ? seg : seg.map(p => this.mapCoordForDisplay(p)).filter(Boolean);
+						const xs = segForCalc.map(c => Number(c[0])).filter(isFinite);
+						const ys = segForCalc.map(c => Number(c[1])).filter(isFinite);
 						if (xs.length && ys.length) {
 							let minX = Math.min(...xs), maxX = Math.max(...xs);
 							let adjXs = xs.slice();
@@ -6962,10 +9099,17 @@ new Vue({
 							}
 							const minY = Math.min(...ys), maxY = Math.max(...ys);
 							let cx = (minX + maxX) / 2;
-							if (cx > 180) cx -= 360;
+							if (cx > 180 && this.mapVersion !== 'ap-zh') cx -= 360;
 							const cy = (minY + maxY) / 2;
 							targetCoord = [cx, cy];
 							this.focusTargetCoord = targetCoord;
+							// 依据海缆分段包络估算合适的缩放级别（仅 2D）
+							const spanX = Math.max(1, Math.abs(maxX - minX));
+							const spanY = Math.max(1, Math.abs(maxY - minY));
+							const span = Math.max(spanX, spanY);
+							const zoom = span > 120 ? 1.8 : span > 60 ? 2.2 : span > 20 ? 2.6 : 3.2;
+							if (!this.isGlobe) this.geoZoom = zoom;
+							this.focusDebug('updateChart 海缆聚焦居中', { cx, cy });
 						}
 					}
 				}
@@ -6985,28 +9129,69 @@ new Vue({
 				});
 				lines = this.landingShowAssociated ? this.decorateLines(candidateLines) : [];
 				const color = this.ownershipColor(this.focusedLanding.ownership || '非权益');
-				points = [{ name: this.normalizeText(this.focusedLanding.name || '登陆站'), value: this.focusedLanding.coords, lpData: this.focusedLanding, detail: this.stationDetails[this.focusedLanding.id] || null, itemStyle: { color } }];
+				const landingCoord = this.isGlobe ? this.focusedLanding.coords : (this.mapCoordForDisplay(this.focusedLanding.coords) || this.focusedLanding.coords);
+				points = [{ name: this.normalizeText(this.focusedLanding.name || '登陆站'), value: landingCoord, lpData: this.focusedLanding, detail: this.stationDetails[this.focusedLanding.id] || null, itemStyle: { color } }];
 				pulseLanding = true;
 				titleText = this.displayLandingName(this.focusedLanding) || '登陆站';
-				targetCoord = this.focusedLanding.coords;
+				targetCoord = landingCoord;
 				this.focusTargetCoord = targetCoord;
+				const faultFilter = new Set();
+				(this.displayFaults || []).forEach(f => {
+					for (let i = 1; i <= 3; i++) {
+						const lv = normId(f[`involvedLanding${i}`]);
+						if (!lv) continue;
+						const targets = [normId(this.focusedLanding.name), normId(this.formatLandingName(this.focusedLanding.name)), normId(this.focusedLanding.id)];
+						if (targets.includes(lv)) {
+							const related = this.resolveFaultLines(f) || [];
+							related.forEach(l => faultFilter.add(normId(l.feature_id || l.id || l.name)));
+							break;
+						}
+					}
+				});
+				if (faultFilter.size) {
+					const faultLinesLanding = this.buildFaultLines({ filterSet: faultFilter, highlightSet: faultFilter }) || [];
+					const relatedFaults = collectFaultsByFilterSet(faultFilter);
+					if (relatedFaults.length) {
+						lines = faultLinesLanding;
+						const faultPoints = buildFaultPointsForFaults(relatedFaults);
+						points = faultPoints.length ? faultPoints : [];
+					} else {
+						lines = lines.concat(faultLinesLanding);
+					}
+				}
 			} else {
 				// 若登陆站关联海缆有选择，则按选择过滤（支持 id/name/feature_id）；否则展示全量
 				const visSet = (this.landingTooltip && Array.isArray(this.landingTooltip.selectedCableIds) && this.landingTooltip.selectedCableIds.length)
 					? new Set(this.landingTooltip.selectedCableIds.map(v => String(v || '').trim().toLowerCase()))
 					: null;
-				const baseLines = visSet
+				let baseLines = visSet
 					? this.filteredCablesMap.filter(l => {
 						const keys = [l.id, l.name, l.feature_id].map(v => String(v || '').trim().toLowerCase());
 						return keys.some(k => k && visSet.has(k));
 					})
 					: this.filteredCablesMap;
+				// “仅显示故障”：在常规 2D/3D 下按涉故障走线过滤基础海缆集合
+				if (this.faultOnlyOnMap && !picking && this.focusMode !== 'fault') {
+					const related = this.faultRelatedLineSet();
+					if (related && related.size) {
+						const has = (l) => {
+							const keys = [l.id, l.feature_id, l.name].map(v => String(v || '').trim().toLowerCase());
+							return keys.some(k => k && related.has(k));
+						};
+						baseLines = baseLines.filter(l => has(l));
+					}
+				}
 				lines = this.decorateLines(baseLines);
 				points = this.buildLandingPointsForMap(this.filteredCablesMap);
 				const locPts = this.selectedFault ? this.buildFaultLocationPoints(this.selectedFault) : this.buildAllFaultLocationPoints();
 				if (locPts.length) points = points.concat(locPts);
 				targetCoord = null;
 				this.focusTargetCoord = null;
+			}
+			// “仅显示故障”：非打点态下仅显示故障走线与故障定位点
+			if (this.faultOnlyOnMap && !picking) {
+				lines = faultLines.slice();
+				points = (points || []).filter(p => p && p.isFaultLocation);
 			}
 			if (showCablesFlag) {
 				// 若是故障聚焦且仅单条（例如通过地图点击某条故障海缆进入聚焦），则不叠加其余故障
@@ -7059,24 +9244,67 @@ new Vue({
 			const prevOpt = this.myChart.getOption ? (this.myChart.getOption() || {}) : {};
 			const hasGeo = Array.isArray(prevOpt.geo) ? prevOpt.geo.length > 0 : !!prevOpt.geo;
 			const hasGlobe = Array.isArray(prevOpt.globe) ? prevOpt.globe.length > 0 : !!prevOpt.globe;
+			const prevGeo = (() => {
+				try {
+					if (hasGeo && prevOpt.geo) return Array.isArray(prevOpt.geo) ? prevOpt.geo[0] : prevOpt.geo;
+				} catch (e) { }
+				return null;
+			})();
+			const prevGeoCenter = Array.isArray(prevGeo?.center) ? prevGeo.center.map(Number) : null;
+			const prevGeoZoom = (prevGeo && prevGeo.zoom != null) ? Number(prevGeo.zoom) : null;
+			// 2D 视图：优先保留用户拖拽/缩放视角，避免刷新时回到默认中心
+			const geoCenter = (() => {
+				if (this._geoUserLocked && Array.isArray(this._geoUserView?.center)) return this._geoUserView.center;
+				if (Array.isArray(targetCoord)) return targetCoord;
+				if (prevGeoCenter) return prevGeoCenter;
+				if (Array.isArray(this.focusTargetCoord)) return this.focusTargetCoord;
+				return this.mapCenter();
+			})();
+			const geoZoomRender = (() => {
+				if (this._geoUserLocked && isFinite(this._geoUserView?.zoom)) return this._geoUserView.zoom;
+				if (isFinite(this.geoZoom)) return this.geoZoom;
+				if (isFinite(prevGeoZoom)) return prevGeoZoom;
+				return 1.8;
+			})();
+			this.geoZoom = geoZoomRender;
 			// 3D 模式补充：把“故障定位点（pointCoordX）”与当前打点 marker 注入到 points，确保在地球上显示
 			if (this.isGlobe) {
-				const showFaultPoints = this.showFaultCablesOnMap || this.focusMode === 'fault' || picking;
+					// 3D 模式：当聚焦故障/海缆/登陆站且涉及故障时，注入对应故障定位点，保证标签可见
+					const showFaultPoints = this.showFaultCablesOnMap || this.focusMode === 'fault' || picking || (this.focusMode === 'cable') || (this.focusMode === 'landing');
 				if (showFaultPoints) {
-					const faultsList = (this.focusMode === 'fault' && this.selectedFault)
-						? [this.selectedFault]
-						: ((Array.isArray(this.displayFaults) && this.displayFaults.length) ? this.displayFaults : []);
+						let faultsList = (this.focusMode === 'fault' && this.selectedFault)
+							? [this.selectedFault]
+							: ((Array.isArray(this.displayFaults) && this.displayFaults.length) ? this.displayFaults : []);
+						// 若当前聚焦的海缆/登陆站有故障过滤集合，优先缩小到相关故障
+						try {
+							const normId = (v) => String(v || '').trim().toLowerCase();
+							let filterSet = null;
+							if (this.focusMode === 'cable' && Array.isArray(lines) && lines.length) {
+								filterSet = new Set();
+								lines.forEach(l => filterSet.add(normId(l?.lineData?.feature_id || l?.lineData?.id || l?.name)));
+							}
+							if (this.focusMode === 'landing') {
+								filterSet = new Set();
+								(lines || []).forEach(l => filterSet.add(normId(l?.lineData?.feature_id || l?.lineData?.id || l?.name)));
+							}
+							if (filterSet && filterSet.size) {
+								faultsList = (this.displayFaults || []).filter(f => {
+									const rel = this.resolveFaultLines(f) || [];
+									return rel.some(l => filterSet.has(normId(l.feature_id || l.id || l.name)));
+								});
+							}
+						} catch (e) { /* noop */ }
 					faultsList.forEach((f, fi) => {
 						for (let i = 1; i <= 3; i++) {
 							const coord = this.displayCoordFromStr(f[`pointCoord${i}`]);
 							if (coord && coord.length >= 2 && isFinite(coord[0]) && isFinite(coord[1])) {
 								points.push({
 									value: [Number(coord[0]), Number(coord[1])],
-									name: `${this.faultTitle(f) || '故障'}-${i}`,
-									labelName: `故障 ${fi + 1} 定位点 ${i}`,
+									name: `${this.faultTitle(f) || this.t('故障')}-${i}`,
+									labelName: `${this.t('故障')} ${fi + 1} ${this.t('定位点')} ${i}`,
 									isFaultLocation: true,
-									itemStyle: { color: '#ff4d4f', opacity: 0.85 },
-									symbolSize: 12
+										itemStyle: { color: '#ff4d4f', opacity: 0.9 },
+										symbolSize: 18
 								});
 							}
 						}
@@ -7084,15 +9312,15 @@ new Vue({
 					// 当前打点会话的脉冲点也加入 3D（diamond 样式），用于确认定位
 					const faultPointCoord = this.getFaultPointMarkerCoord();
 					const hasIndex = this.faultEditState && [1, 2, 3].includes(this.faultEditState.index);
-					const currentFaultLabel = hasIndex ? `故障定位点 ${this.faultEditState.index}` : '故障定位点';
+					const currentFaultLabel = hasIndex ? `${this.t('故障定位点')} ${this.faultEditState.index}` : this.t('故障定位点');
 					if (faultPointCoord && Array.isArray(faultPointCoord)) {
 						points.push({
 							value: faultPointCoord,
-							name: '故障定位点',
+							name: this.t('故障定位点'),
 							labelName: currentFaultLabel,
 							isFaultLocation: true,
-							itemStyle: { color: '#ff4d4f', opacity: 0.7 },
-							symbolSize: 12
+								itemStyle: { color: '#ff4d4f', opacity: 0.85 },
+								symbolSize: 18
 						});
 					}
 				}
@@ -7116,13 +9344,39 @@ new Vue({
 					} catch (e) { }
 					return null;
 				})();
-				const globeOpt = this.makeOptionGlobe(lines, points, titleText, targetCoord || prevTarget, prevViewControl);
+				const globeTarget = (() => {
+					if (this.pendingFocusRecenter3D && targetCoord && Array.isArray(targetCoord)) return targetCoord;
+					if (prevTarget && Array.isArray(prevTarget)) return prevTarget;
+					return targetCoord;
+				})();
+				const globeOpt = this.makeOptionGlobe(lines, points, titleText, globeTarget, prevViewControl);
 				this.myChart.setOption(globeOpt, true);
+				// 同步中间大标题覆盖层（3D）
+				this.applyTitleText(titleText);
+				this.pendingFocusRecenter3D = false;
 				this.onResize();
 				return;
 			}
 			// 2D 模式：始终全量覆盖，避免多国配色 regions 残留
-			this.myChart.setOption(this.makeOption(lines, points), true);
+			const option2d = this.makeOption(lines, points, geoCenter, geoZoomRender);
+			this.myChart.setOption(option2d, true);
+			this._geoUserView = { center: Array.isArray(geoCenter) ? geoCenter.slice() : geoCenter, zoom: geoZoomRender };
+			// 海缆聚焦（2D）：在完整重绘后显式应用 center/zoom，确保视觉居中
+			try {
+				if (!this.isGlobe && this.focusMode === 'cable' && targetCoord && Array.isArray(targetCoord) && !this._geoUserLocked) {
+					const center = targetCoord.map(Number);
+					const zoom = this.geoZoom || 2.6;
+					this.myChart.setOption({ geo: { center, zoom } });
+					this.focusDebug('updateChart 海缆聚焦应用(2D)', { center, zoom });
+				}
+				// 登陆站聚焦（2D）：始终以登陆站坐标为视觉中心
+				if (!this.isGlobe && this.focusMode === 'landing' && targetCoord && Array.isArray(targetCoord) && !this._geoUserLocked) {
+					const center = targetCoord.map(Number);
+					const zoom = this.geoZoom || 3.0;
+					this.myChart.setOption({ geo: { center, zoom } });
+					this.focusDebug('updateChart 登陆站聚焦应用(2D)', { center, zoom });
+				}
+			} catch (e) { /* noop */ }
 			const ownershipLineZ = { '非权益': 40, '租用': 50, '合建': 60, '自建': 70, '故障': 90 };
 			const ownershipPointZ = { '非权益': 50, '租用': 60, '合建': 70, '自建': 80, '故障': 110 };
 
@@ -7139,14 +9393,15 @@ new Vue({
 				if (!groupLines[key]) groupLines[key] = [];
 				groupLines[key].push(item);
 			});
-			let lineSeriesList = Object.keys(groupLines).map(label => ({
+			const lineSeriesList = Object.keys(groupLines).map(label => ({
 				id: `cables-${label}`,
 				name: `海缆（${label}）`,
 				type: 'lines',
 				coordinateSystem: 'geo',
 				zlevel: ownershipLineZ[label] ?? ownershipLineZ['非权益'],
 				polyline: true,
-						effect: { show: this.lineEffectEnabled || this.focusMode === 'cable' || this.focusMode === 'fault', constantSpeed: 80, symbol: 'circle', symbolSize: 6, trailLength: 0.06, color: '#c8f7ff' },
+					// 2D 普通：光点加速、拖尾适度延长，线条透明度与未开启效果一致，仅改动光点
+					effect: { show: this.lineEffectEnabled || this.focusMode === 'cable' || this.focusMode === 'fault', constantSpeed: 120, symbol: 'circle', symbolSize: 7, trailLength: 0.24, color: 'rgba(255,255,255,0.85)' },
 				animation: false,
 				lineStyle: { width: 3, opacity: 0.3, curveness: 0.15, color: (label === '故障' ? '#ff4d4f' : this.ownershipColor(label)) },
 				itemStyle: { color: (label === '故障' ? '#ff4d4f' : this.ownershipColor(label)) },
@@ -7157,7 +9412,7 @@ new Vue({
 			if (!groupLines['非权益']) {
 				lineSeriesList.push({
 					id: 'cables-非权益',
-					name: '海缆（非权益）',
+					name: this.t('海缆（非权益）'),
 					type: 'lines', coordinateSystem: 'geo', zlevel: ownershipLineZ['非权益'] ?? 50, polyline: true,
 					animation: false,
 					lineStyle: { width: 3, opacity: 0.0, curveness: 0.15, color: this.ownershipColor('非权益') },
@@ -7187,7 +9442,7 @@ new Vue({
 				points = filtered;
 				pulseLanding = filtered.length > 0;
 			}
-			const faultLocPoints = picking ? [] : points.filter(p => p && p.isFaultLocation);
+			const faultLocPoints = picking ? [] : points.filter(p => p && p.isFaultLocation).map(p => this.localizeFaultPointLabel(p));
 			let basePoints = points.filter(p => !(p && p.isFaultLocation));
 			if (faultOverlayActive) {
 				const dimPointOpacity = 0.45;
@@ -7196,7 +9451,7 @@ new Vue({
 			const pinSymbol = 'path://M0,-22 C-10,-22 -18,-14 -18,-4 C-18,8 -7,6 0,20 C7,6 18,8 18,-4 C18,-14 10,-22 0,-22 Z';
 			const faultPointCoord = this.getFaultPointMarkerCoord();
 			const hasIndex = this.faultEditState && [1, 2, 3].includes(this.faultEditState.index);
-			const currentFaultLabel = hasIndex ? `故障定位点 ${this.faultEditState.index}` : '故障定位点';
+			const currentFaultLabel = hasIndex ? `${this.t('故障定位点')} ${this.faultEditState.index}` : this.t('故障定位点');
 			const groupPoints = {};
 			basePoints.forEach(item => {
 				const label = normalizeOwnership((item?.lpData?.ownership) || '非权益');
@@ -7204,58 +9459,62 @@ new Vue({
 				if (!groupPoints[key]) groupPoints[key] = [];
 				groupPoints[key].push(item);
 			});
-			const pointsSeriesList = Object.keys(groupPoints).map(label => ({
-				id: `points-${label}`,
-				name: `登陆站（${label}）`,
-				type: pulseLanding ? 'effectScatter' : 'scatter',
-				coordinateSystem: 'geo',
-				zlevel: ownershipPointZ[label] ?? ownershipPointZ['非权益'],
-				label: {
-					show: (this.focusMode !== 'none') || this.showLandingLabels,
-					formatter: p => {
-						const d = p && p.data;
-						const lp = d && (d.lpData || null);
-						if (lp) return this.displayLandingName(lp);
-						const name = d && (d.name || '');
-						return this.normalizeText(name);
+			const pointsSeriesList = Object.keys(groupPoints).map(label => {
+				const useRipple = this.rippleEffectEnabled || pulseLanding;
+				return {
+					id: `points-${label}`,
+					name: `登陆站（${label}）`,
+					type: useRipple ? 'effectScatter' : 'scatter',
+					coordinateSystem: 'geo',
+					zlevel: ownershipPointZ[label] ?? ownershipPointZ['非权益'],
+					label: {
+						show: this.shouldShowBaseLandingLabels(),
+						formatter: p => {
+							const d = p && p.data;
+							const lp = d && (d.lpData || null);
+							if (lp) return this.displayLandingName(lp);
+							const name = d && (d.name || '');
+							return this.normalizeText(name);
+						},
+						color: '#fff',
+						fontSize: 14,
+						backgroundColor: 'rgba(0,0,0,0.35)',
+						padding: [4, 6],
+						borderRadius: 4,
+						distance: 12,
+						position: 'right',
+						offset: [8, 0]
 					},
-					color: '#fff',
-					fontSize: 14,
-					backgroundColor: 'rgba(0,0,0,0.35)',
-					padding: [4, 6],
-					borderRadius: 4,
-					distance: 12,
-					position: 'right',
-					offset: [8, 0]
-				},
-				// 基础尺寸按权益：非权益12、租用14、合建16、自建18
-				// 登陆聚焦模式整体 +4；悬停时再 +2
-				symbolSize: (() => {
-					const base = this.ownershipLandingSize(label);
-					const bump = (this.focusMode === 'landing') ? 4 : 0;
-					return base + bump;
-				})(),
-				rippleEffect: pulseLanding ? { scale: 4.5, brushType: 'stroke', period: 3.2 } : undefined,
-				animation: false,
-				itemStyle: { opacity: 0.65, color: this.ownershipColor(label) },
-				emphasis: {
-					scale: true,
-					itemStyle: { opacity: 1, shadowBlur: 18, shadowColor: 'rgba(200, 247, 255, 0.95)' },
-					animation: true,
-					animationDuration: 220,
-					animationEasing: 'elasticOut',
+					// 基础尺寸按权益：非权益12、租用14、合建16、自建18
+					// 登陆聚焦模式整体 +4；悬停时再 +2
 					symbolSize: (() => {
 						const base = this.ownershipLandingSize(label);
 						const bump = (this.focusMode === 'landing') ? 4 : 0;
-						return base + bump + 2;
-					})()
-				},
-				data: groupPoints[label]
-			}));
+						return base + bump;
+					})(),
+					showEffectOn: useRipple ? 'render' : undefined,
+					rippleEffect: useRipple ? { scale: 2.4, brushType: 'stroke', period: this.randomRipplePeriod(3.0, 0.85) } : undefined,
+					animation: false,
+					itemStyle: { opacity: 0.65, color: this.ownershipColor(label) },
+					emphasis: {
+						scale: true,
+						itemStyle: { opacity: 1, shadowBlur: 18, shadowColor: 'rgba(200, 247, 255, 0.95)' },
+						animation: true,
+						animationDuration: 220,
+						animationEasing: 'elasticOut',
+						symbolSize: (() => {
+							const base = this.ownershipLandingSize(label);
+							const bump = (this.focusMode === 'landing') ? 4 : 0;
+							return base + bump + 2;
+						})()
+					},
+					data: groupPoints[label]
+				};
+			});
 			let faultLocSeries = [{
 				// 故障定位点（2D）：红色菱形，默认显示标签。仅显示故障点，不包含“涉及登陆站”。
 				id: 'fault-locations',
-				name: '故障定位点与涉及登陆站',
+				name: this.t('故障定位点与涉及登陆站'),
 				type: 'effectScatter',
 				coordinateSystem: 'geo',
 				zlevel: 95,
@@ -7264,7 +9523,7 @@ new Vue({
 					const d = params && params.data ? params.data : {};
 					return d.symbolSize || 12;
 				},
-				rippleEffect: { scale: 2.6, brushType: 'stroke', period: 2.6 },
+				rippleEffect: this.rippleEffectEnabled ? { scale: 2.4, brushType: 'stroke', period: this.randomRipplePeriod(2.6, 0.7) } : undefined,
 				label: {
 					show: true,
 					formatter: params => {
@@ -7286,29 +9545,29 @@ new Vue({
 			}
 			// 故障涉及登陆站（2D）：橙色涟漪效果。应用户要求，在 2D 模式下隐藏该图层，仅在 3D 模式展示。
 			const involvedLandingPoints = (() => {
-				const src = (Array.isArray(this.faultsFromApi) && this.faultsFromApi.length) ? this.faultsFromApi : (this.displayFaults || []);
+				// 仅在聚焦故障时绘制涉及登陆站，避免 2D 其他场景杂乱
+				const targetFault = (this.focusMode === 'fault' && this.selectedFault) ? this.selectedFault : null;
+				if (!targetFault) return [];
 				const out = [];
 				const norm = v => this.normalizeText(v || '').toLowerCase();
-				(src || []).forEach(f => {
-					for (let idx = 1; idx <= 3; idx++) {
-						const nameRaw = f[`involvedLanding${idx}`] || '';
-						const dist = f[`distance${idx}`] || '';
-						if (!nameRaw) continue;
-						const match = (this.landingPoints || []).find(lp => {
-							const names = [lp.name, this.formatLandingName(lp.name), lp.id].map(x => norm(x));
-							const target = norm(nameRaw);
-							return names.includes(target);
-						});
-						if (match && Array.isArray(match.coords)) {
-							out.push({ name: this.displayLandingName(match), value: match.coords, lpData: match, distance: dist });
-						}
+				for (let idx = 1; idx <= 3; idx++) {
+					const nameRaw = targetFault[`involvedLanding${idx}`] || '';
+					const dist = targetFault[`distance${idx}`] || '';
+					if (!nameRaw) continue;
+					const match = (this.landingPoints || []).find(lp => {
+						const names = [lp.name, this.formatLandingName(lp.name), lp.id].map(x => norm(x));
+						const target = norm(nameRaw);
+						return names.includes(target);
+					});
+					if (match && Array.isArray(match.coords)) {
+						out.push({ name: this.displayLandingName(match), value: match.coords, lpData: match, distance: dist });
 					}
-				});
+				}
 				return out;
 			})();
 			const faultInvolvedLandingSeries = {
 				id: 'fault-involved-landings',
-				name: '故障涉及登陆站',
+				name: this.t('故障涉及登陆站'),
 				type: 'effectScatter',
 				coordinateSystem: 'geo',
 				zlevel: 96,
@@ -7332,7 +9591,7 @@ new Vue({
 				symbolSize: 12,
 				itemStyle: { color: '#ff9900', opacity: 0.95 },
 				showEffectOn: 'render',
-				rippleEffect: { scale: 3.6, brushType: 'stroke', period: 3.2 },
+				rippleEffect: this.rippleEffectEnabled ? { scale: 2.6, brushType: 'stroke', period: this.randomRipplePeriod(3.0, 0.85) } : undefined,
 				data: involvedLandingPoints
 			};
 			// 海缆名称标签（聚焦海缆时显示）
@@ -7378,14 +9637,14 @@ new Vue({
 			const showFaultPoints = this.showFaultCablesOnMap || this.focusMode === 'fault' || picking;
 			const faultPointPulseSeries = (faultPointCoord && hasIndex && showFaultPoints) ? {
 				id: 'fault-point-pulse',
-				name: '故障定位点与涉及登陆站',
+				name: this.t('故障定位点与涉及登陆站'),
 				type: this.isGlobe ? 'scatter3D' : 'effectScatter',
 				coordinateSystem: this.isGlobe ? 'globe' : 'geo',
 				zlevel: 179,
 				symbol: 'diamond',
 				symbolSize: 12,
 				itemStyle: { color: '#ff4d4f', opacity: 0.9, shadowBlur: 12, shadowColor: 'rgba(255,77,79,0.5)' },
-				rippleEffect: this.isGlobe ? undefined : { scale: 3.0, brushType: 'stroke', period: 2.6 },
+				rippleEffect: (this.rippleEffectEnabled && !this.isGlobe) ? { scale: 2.6, brushType: 'stroke', period: this.randomRipplePeriod(2.6, 0.75) } : undefined,
 				label: {
 					show: true,
 					formatter: p => (p?.data?.labelName) || currentFaultLabel,
@@ -7398,7 +9657,7 @@ new Vue({
 					offset: [0, -8]
 				},
 				animation: false,
-				data: [{ value: faultPointCoord, name: '故障定位点', labelName: currentFaultLabel }]
+				data: [{ value: faultPointCoord, name: this.t('故障定位点'), labelName: currentFaultLabel }]
 			} : null;
 			const faultPointAll = [];
 			const sourceFaultsRaw = Array.isArray(this.faultsFromApi) && this.faultsFromApi.length ? this.faultsFromApi : (this.displayFaults || []);
@@ -7469,25 +9728,25 @@ new Vue({
 					if (coord && coord.length >= 2 && isFinite(coord[0]) && isFinite(coord[1])) {
 						faultPointAll.push({
 							value: [Number(coord[0]), Number(coord[1])],
-							name: `${this.faultTitle(f) || '故障'}-${i}`,
-							labelName: `故障 ${fi + 1} 定位点 ${i}`
+							name: `${this.faultTitle(f) || this.t('故障')}-${i}`,
+							labelName: `${this.t('故障')} ${fi + 1} ${this.t('定位点')} ${i}`
 						});
 					}
 				}
 			});
 			const faultPointAllSeries = (faultPointAll.length && showFaultPoints) ? {
 				id: 'fault-point-all',
-				name: '故障定位点与涉及登陆站',
+				name: this.t('故障定位点与涉及登陆站'),
 				type: this.isGlobe ? 'scatter3D' : 'effectScatter',
 				coordinateSystem: this.isGlobe ? 'globe' : 'geo',
 				zlevel: 170,
 				symbol: 'diamond',
 				symbolSize: 14,
 				itemStyle: { color: '#ff4d4f', opacity: 0.85 },
-				rippleEffect: this.isGlobe ? undefined : { scale: 3.2, brushType: 'stroke', period: 2.8 },
+				rippleEffect: (this.rippleEffectEnabled && !this.isGlobe) ? { scale: 2.6, brushType: 'stroke', period: this.randomRipplePeriod(2.8, 0.75) } : undefined,
 				label: {
 					show: true,
-					formatter: p => (p?.data?.labelName) || '故障定位点',
+					formatter: p => (p?.data?.labelName) || this.t('故障定位点'),
 					color: '#ff4d4f',
 					fontWeight: 'bold',
 					backgroundColor: 'rgba(40,24,4,0.65)',
@@ -7551,7 +9810,8 @@ new Vue({
 			// 初学者提示：2D 模式下不显示“故障涉及登陆站”的图层，仅保留红色故障定位点
 			if (showLandingsFlag) {
 				seriesList.push(...pointsSeriesList, ...faultLocSeries);
-				if (this.isGlobe) seriesList.push(faultInvolvedLandingSeries);
+				const hasInvolved = Array.isArray(faultInvolvedLandingSeries.data) && faultInvolvedLandingSeries.data.length;
+				if ((this.isGlobe || this.focusMode === 'fault') && hasInvolved) seriesList.push(faultInvolvedLandingSeries);
 			}
 			if (showCablesFlag) seriesList.push(nodesSeries);
 			if (faultPointAllSeries) seriesList.push(faultPointAllSeries);
@@ -7581,6 +9841,8 @@ new Vue({
 				data: legendData2D
 			} : { show: false };
 			this.myChart.setOption({ series: seriesList, title: { text: titleText, show: this.isMapFullscreen }, tooltip: tooltipPatch, legend: legendCfg }, { replaceMerge: ['series'] });
+			// 同步更新中间大标题覆盖层
+			this.applyTitleText(titleText);
 			this.onResize();
 		},
 		bindChartEvents() {
@@ -7591,6 +9853,30 @@ new Vue({
 				try { this.chartEventTarget.off(); } catch (e) { /* noop */ }
 			}
 			this.chartEventTarget = chart;
+			const syncGlobeSlider = () => {
+				try {
+					const opt = chart.getOption ? chart.getOption() : null;
+					const g = opt ? (Array.isArray(opt.globe) ? opt.globe[0] : opt.globe) : null;
+					const dist = g && g.viewControl && isFinite(g.viewControl.distance) ? Number(g.viewControl.distance) : null;
+					if (isFinite(dist)) {
+						this.globeDistance = dist;
+						this.statesToSlider();
+					}
+				} catch (e) { /* noop */ }
+			};
+			let globeSyncTimer = null;
+			const syncGlobeSliderThrottled = () => {
+				try { if (globeSyncTimer) clearTimeout(globeSyncTimer); } catch (e) { /* noop */ }
+				globeSyncTimer = setTimeout(syncGlobeSlider, 24);
+			};
+			chart.on('globeroam', syncGlobeSlider);
+			chart.on('globeRoam', syncGlobeSlider);
+			try {
+				if (chart.getZr && chart.getZr()) {
+					chart.getZr().on('mousewheel', syncGlobeSliderThrottled);
+					chart.getZr().on('mousemove', () => { /* keep ZR warm to确保 wheel 捕获 */ });
+				}
+			} catch (e) { /* noop */ }
 			chart.on('click', (params) => {
 				try {
 					if (!params) return;
@@ -7606,25 +9892,38 @@ new Vue({
 						const raw = params.data || {};
 						const lineObj = (raw && (raw.lineData || raw)) || null;
 						const seg = (raw && raw.coords) || null;
+						const norm = (v) => String(v || '').trim().toLowerCase();
+						const findFaultByLine = () => {
+							if (!lineObj) return null;
+							const keys = [lineObj.feature_id, lineObj.id, lineObj.name].map(norm).filter(Boolean);
+							if (!keys.length) return null;
+							const faults = Array.isArray(this.displayFaults) ? this.displayFaults : [];
+							return faults.find(ft => {
+								const lines = this.resolveFaultLines(ft) || [];
+								return lines.some(l => {
+									const lk = [l.feature_id, l.id, l.name].map(norm);
+									return lk.some(k => k && keys.includes(k));
+								});
+							}) || null;
+						};
 						// 点击线条进入聚焦
 						// 点击故障叠加线：进入故障聚焦
 						if (raw && raw.fault && lineObj && (lineObj.feature_id || lineObj.id || lineObj.name)) {
-							const preferName = this.normalizeText(lineObj.name || '').trim();
-							const key = preferName || String(lineObj.feature_id || lineObj.id || lineObj.name);
+							const fault = findFaultByLine();
+							if (fault) { this.focusFaultOnMap(fault); return; }
+							// 若未匹配到故障数据，兜底保持故障叠加显示并居中当前线段
+							this.showFaultCablesOnMap = true;
 							this.focusMode = 'fault';
-							this.focusedFaultLineIds = key ? [key] : [];
-							const coords = Array.isArray(seg) && seg.length ? seg : (Array.isArray(lineObj.coords) ? lineObj.coords : []);
-							if (Array.isArray(coords) && coords.length) {
-								const xs = coords.map(c => Number(c[0])).filter(isFinite);
-								const ys = coords.map(c => Number(c[1])).filter(isFinite);
-								if (xs.length && ys.length) {
+							this.focusedFaultLineIds = [norm(lineObj.feature_id || lineObj.id || lineObj.name)].filter(Boolean);
+							if (Array.isArray(seg) && seg.length) {
+								const xs = seg.map(c => Number(c[0])).filter(isFinite);
+								const ys = seg.map(c => Number(c[1])).filter(isFinite);
+								if (xs.length && ys.length && !this.isGlobe) {
 									const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
 									const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
 									this.focusTargetCoord = [cx, cy];
-									if (!this.isGlobe) {
-										this.geoZoom = 3.0;
-										this.myChart.setOption({ geo: { center: [cx, cy], zoom: this.geoZoom } });
-									}
+									this.geoZoom = 3.0;
+									this.myChart.setOption({ geo: { center: [cx, cy], zoom: this.geoZoom } });
 								}
 							}
 							this.updateChart();
@@ -7667,6 +9966,7 @@ new Vue({
 					}
 				} catch (e) { console.warn('地图点击聚焦失败', e); }
 			});
+			chart.on('georoam', () => { this.onGeoRoam(); });
 			chart.on('mousemove', (params) => { this.onMapMouseMove(params); });
 			chart.on('globalout', () => {
 				try {
@@ -7756,6 +10056,10 @@ new Vue({
 			});
 		},
 		ensureChartInstance() {
+			// 在 2D 瓦片地图模式下不初始化 ECharts 图表实例（改用自研 tiles 渲染器）
+			if (!this.isGlobe && this.mapVersion === 'tiles') {
+				return;
+			}
 			if (this.myChart && typeof this.myChart.isDisposed === 'function' && !this.myChart.isDisposed()) {
 				if (this.chartEventTarget !== this.myChart) this.bindChartEvents();
 				return;
@@ -7773,6 +10077,23 @@ new Vue({
 		},
 		onResize() {
 			this.detectCompactMode();
+			// tiles 模式下走自定义渲染器的 resize
+			if (!this.isGlobe && this.mapVersion === 'tiles') {
+				const el = this.$refs.map || document.getElementById('worldCableMap');
+				if (!el) return;
+				const parent = el.parentElement;
+				const rect = parent ? parent.getBoundingClientRect() : el.getBoundingClientRect();
+				let width = rect?.width || el.clientWidth || (parent ? parent.clientWidth : 0) || window.innerWidth;
+				let height = rect?.height || el.clientHeight || (parent ? parent.clientHeight : 0) || Math.max(360, window.innerHeight * 0.6);
+				const minH = Math.max(360, window.innerHeight * 0.5);
+				const minW = Math.max(320, window.innerWidth * 0.4);
+				if (width < minW) width = minW;
+				if (height < minH) height = minH;
+				el.style.width = width + 'px';
+				el.style.height = height + 'px';
+				try { if (this.tileViewer && this.tileViewer.resize) this.tileViewer.resize(); } catch (e) { /* noop */ }
+				return;
+			}
 			this.ensureChartInstance();
 			if (!this.myChart) return;
 			const el = this.$refs.map || document.getElementById('worldCableMap');
@@ -7799,19 +10120,38 @@ new Vue({
 			}
 		}
 	},
-	async mounted() {
+		async mounted() {
 		const authed = await this.ensureUserAccess();
 		if (!authed) return;
+			// 恢复打点右下浮窗调色盘（本地持久化，九模式通用）
+			this.loadFaultPickPalette();
+		// 首屏先根据设备宽度确定布局/地图模式，防止后续重绘抖动
+		const shouldAutoCompact = (window.innerWidth || 0) <= 3000;
+		if (!this.userToggledCompact && shouldAutoCompact) {
+			this.isCompactMode = true;
+			if (!this.autoTileApplied) {
+				this.mapVersion = 'tiles';
+				this.autoTileApplied = true;
+			}
+		}
 		this.mapLoading = true;
-		this.mapLoadingText = '正在加载底图与脚本资源…（首次加载稍慢）';
+		this.mapLoadingText = this.mapVersion === 'tiles'
+			? '正在准备紧凑瓦片模式…（1/4：加载底图资源）'
+			: '正在加载底图与脚本资源…（首次加载稍慢）';
 		await this.ensureBaseMapForMode();
-		this.mapLoadingText = '正在加载海缆数据…（数据量较大，请稍候）';
+		this.mapLoadingText = this.mapVersion === 'tiles'
+			? '正在加载海缆数据…（2/4：叠加前数据）'
+			: '正在加载海缆数据…（数据量较大，请稍候）';
 		await this.loadCableData();
-		this.mapLoadingText = '正在加载登陆站数据…';
+		this.mapLoadingText = this.mapVersion === 'tiles'
+			? '正在加载登陆站数据…（3/4：站点与标签）'
+			: '正在加载登陆站数据…';
 		await this.loadLandingPoints();
-		this.mapLoadingText = '正在检测并连接故障数据接口…';
+		this.mapLoadingText = this.t('正在检测并连接故障数据接口…');
 		await this.autoDetectFaultApiMode();
-		this.mapLoadingText = '正在加载故障数据…';
+		this.mapLoadingText = this.mapVersion === 'tiles'
+			? '正在加载故障数据…（4/4：叠加故障走线与定位）'
+			: '正在加载故障数据…';
 		await this.loadFaults();
 		await this.waitForMapReady();
 		const container = this.$refs.map || document.getElementById('worldCableMap')
@@ -7822,8 +10162,13 @@ new Vue({
 			container.style.width = preRect.width + 'px';
 			container.style.height = preRect.height + 'px';
 		}
-		// 初始 2D 背景：统一使用底色主题，无需元素背景图
-		this.myChart = echarts.init(container, null, { renderer: 'canvas', devicePixelRatio: window.devicePixelRatio || 1 });
+		const useTiles = (!this.isGlobe && this.mapVersion === 'tiles');
+		// 默认开关：2D 普通关闭，3D 与 2D 瓦片开启
+		this.applyEffectDefaultsForMode();
+		// 初始 2D 背景：若为 tiles 则跳过 ECharts，待 updateChart 初始化瓦片
+		if (!useTiles) {
+			this.myChart = echarts.init(container, null, { renderer: 'canvas', devicePixelRatio: window.devicePixelRatio || 1 });
+		}
 		// 恢复布局与紧凑宽度
 		try {
 			const lp = localStorage.getItem('dp6.layout.leftPanePct');
@@ -7848,16 +10193,25 @@ new Vue({
 		} catch (e) { /* noop */ }
 		const lines = this.decorateLines(this.filteredCablesMap);
 		const points = this.buildLandingPointsForMap(this.filteredCablesMap);
-		this.mapLoadingText = '正在初始化图表并首次渲染…';
-		const initOpt = this.isGlobe ? this.makeOptionGlobe(lines, points) : this.makeOption(lines, points);
-		this.myChart.setOption(initOpt, true);
-		// 首次加载：图表渲染完成后关闭主地图 loading
-		if (this.myChart && typeof this.myChart.on === 'function') {
-			this.myChart.on('finished', () => { this.mapLoading = false; this.mapLoadingText = ''; });
-			// 兜底：若未触发 finished 事件，定时关闭
-			setTimeout(() => { if (this.mapLoading) { this.mapLoading = false; this.mapLoadingText = ''; } }, 4000);
+		this.mapLoadingText = this.t('正在初始化图表并首次渲染…');
+		if (!useTiles) {
+			const initCenter = Array.isArray(this.focusTargetCoord) ? this.focusTargetCoord : this.mapCenter();
+			const initZoom = this.geoZoom || 1.8;
+			const initOpt = this.isGlobe ? this.makeOptionGlobe(lines, points) : this.makeOption(lines, points, initCenter, initZoom);
+			this.myChart.setOption(initOpt, true);
+			// 首次加载：图表渲染完成后关闭主地图 loading
+			if (this.myChart && typeof this.myChart.on === 'function') {
+				this.myChart.on('finished', () => { this.mapLoading = false; this.mapLoadingText = ''; });
+				// 兜底：若未触发 finished 事件，定时关闭
+				setTimeout(() => { if (this.mapLoading) { this.mapLoading = false; this.mapLoadingText = ''; } }, 4000);
+			}
+			this.bindChartEvents();
+		} else {
+			// 瓦片模式：直接走自定义渲染器
+			this.mapLoadingText = this.t('正在初始化瓦片视图与叠加…');
+			this.updateChart();
+			setTimeout(() => { this.mapLoading = false; this.mapLoadingText = ''; }, 600);
 		}
-		this.bindChartEvents();
 		// 初始同步滑条位置
 		this.statesToSlider();
 		// 初始化后立即按最新分层刷新，确保 zlevel 生效

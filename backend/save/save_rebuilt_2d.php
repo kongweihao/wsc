@@ -13,7 +13,7 @@ try {
         echo json_encode([ 'ok' => false, 'error' => 'invalid json', 'engine' => 'php' ], JSON_UNESCAPED_UNICODE);
         exit;
     }
-    $baseDir = dirname(__DIR__, 2) . '/海缆数据/重构的数据';
+    $baseDir = dirname(__DIR__, 2) . '/seacable_data/重构的数据';
     if (!is_dir($baseDir)) {
         if (!mkdir($baseDir, 0775, true) && !is_dir($baseDir)) {
             http_response_code(500);
