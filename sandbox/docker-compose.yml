@@ -1,0 +1,104 @@
+version: "3.9"
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║              龙虾盒子 — OpenClaw AI Agent 专用安全沙盒                  ║
+# ║                                                                          ║
+# ║  核心安全策略：                                                          ║
+# ║    · 丢弃所有 Linux Capabilities（cap_drop: ALL）                        ║
+# ║    · 禁止特权提升（no-new-privileges）                                  ║
+# ║    · 只读根文件系统（read_only: true）                                  ║
+# ║    · 只有 /home/sandbox/workspace 通过 named volume 持久化              ║
+# ║    · 资源硬上限（CPU / 内存）防止沙盒逃逸滥用宿主资源                  ║
+# ║    · 网络隔离（沙盒网段，可选完全断网）                                  ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+services:
+  sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # VNC_PASSWORD 必须在 .env 文件或环境变量中设置（无默认值）
+        VNC_PASSWORD: ${VNC_PASSWORD:?请在 .env 文件或环境变量中设置 VNC_PASSWORD}
+    image: lobster-box:latest
+    container_name: lobster-sandbox
+
+    # ── 安全约束 ────────────────────────────────────────────────────────────
+    # 丢弃所有内核特权，AI Agent 无法 mount、raw socket、ptrace 宿主机进程
+    cap_drop:
+      - ALL
+    # 只补回运行桌面环境所必须的最小特权
+    cap_add:
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    # 禁止容器内进程通过 setuid 提升权限
+    security_opt:
+      - no-new-privileges:true
+    # 只读根文件系统（配合 tmpfs 白名单）
+    read_only: true
+    # 临时目录允许写入（不持久化，容器销毁自动清除）
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+      - /run:size=64m
+      - /var/run:size=64m
+
+    # ── 资源硬上限（防止沙盒滥用宿主资源）──────────────────────────────────
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+        reservations:
+          memory: 512m
+
+    # ── 持久化：只有 workspace 目录对外可见 ──────────────────────────────
+    volumes:
+      # workspace：AI 的唯一合法输出目录，用户从这里取结果
+      - sandbox_workspace:/home/sandbox/workspace
+      # 宿主机目录挂载示例（只挂载需要的文件，且设为只读）
+      # - ./my-task-files:/home/sandbox/input:ro
+
+    # ── 端口映射 ──────────────────────────────────────────────────────────
+    ports:
+      # VNC 客户端连接端口（建议仅绑定 127.0.0.1，不对外暴露）
+      - "127.0.0.1:5900:5900"
+      # noVNC Web 浏览器访问端口（可选）
+      - "127.0.0.1:6080:6080"
+
+    # ── 网络隔离 ──────────────────────────────────────────────────────────
+    networks:
+      - sandbox_net
+    # 如需完全断网，注释上面 networks 行，改用：
+    # network_mode: "none"
+
+    environment:
+      - DISPLAY=:1
+      - TZ=Asia/Shanghai
+      # VNC_PASSWORD 仅用于运行时展示（实际认证基于构建时写入的 passwd 文件）
+      # 注意：环境变量可通过 `docker inspect` 查看，请勿在此传递高敏感凭据
+
+    # ── 容器生命周期 ──────────────────────────────────────────────────────
+    # 任务完成后手动执行 `docker compose down -v` 一键销毁，不留痕迹
+    restart: "no"
+
+    # ── 健康检查 ──────────────────────────────────────────────────────────
+    healthcheck:
+      test: ["CMD", "pgrep", "Xtigervnc"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+# ── 持久化卷（仅 workspace）──────────────────────────────────────────────────
+volumes:
+  sandbox_workspace:
+    driver: local
+
+# ── 网络：与宿主机默认网桥隔离 ──────────────────────────────────────────────
+networks:
+  sandbox_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
