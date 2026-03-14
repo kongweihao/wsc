@@ -995,7 +995,7 @@ new Vue({
 					// 打点调色盘保存提示：九模式一致，仅提示按钮显式保存
 					this.notifyToast(this.t('样式已保存'), 'success');
 				}
-			} catch (e) { /* noop */ }
+			} catch (e) { console.warn('调色盘保存失败（存储空间不足或不可用）:', e); }
 		},
 		// 恢复默认调色盘并保存
 		resetFaultPickPalette() {
@@ -2697,6 +2697,16 @@ new Vue({
 			s = s.replace(/\btaiwan\b/gi, '中国台湾省');
 			return s;
 		},
+		// HTML 实体转义：防止数据中的特殊字符被浏览器解析为标签或属性
+		escapeHtml(s) {
+			if (s == null) return '';
+			return String(s)
+				.replace(/&/g, '&amp;')
+				.replace(/</g, '&lt;')
+				.replace(/>/g, '&gt;')
+				.replace(/"/g, '&quot;')
+				.replace(/'/g, '&#39;');
+		},
 		selectOnlyOwnership(val) {
 			if (!val) return;
 			this.selectedOwnerships = [val];
@@ -4065,10 +4075,10 @@ new Vue({
 				const directionText = this.displayDirection(line.direction || detail.direction);
 				const chips = landings.map(lp => {
 					const langPref = this.getItemLang('landing', lp.id || lp.name || '');
-					const ctry = this.displayCountryLabel(lp.country || lp.nation || lp.country_name || '-', langPref);
+					const ctry = this.escapeHtml(this.displayCountryLabel(lp.country || lp.nation || lp.country_name || '-', langPref));
 					const name = this.normalizeText(lp.name || '');
-					const safeName = name.replace(/\"/g, '&quot;').replace(/"/g, '&quot;');
-					const idAttr = lp.id ? ` data-id="${lp.id}"` : '';
+					const safeName = this.escapeHtml(name);
+					const idAttr = lp.id ? ` data-id="${this.escapeHtml(lp.id)}"` : '';
 					return `<div class="chip" data-action="focus-landing"${idAttr} data-name="${safeName}"><span class="name">${safeName}</span><span class="meta">${ctry}</span></div>`;
 				}).join('');
 				const count = allLandings.length;
@@ -4078,7 +4088,7 @@ new Vue({
 				const ownLabel = line.ownership ? this.t(line.ownership) : '';
 				const chipWrapCls = `chips scrollable ${count > 4 ? 'collapsed' : ''}`;
 				const live = renderLiveDistance();
-				const lineName = this.normalizeText(line.name || this.t('海缆'));
+				const lineName = this.escapeHtml(this.normalizeText(line.name || this.t('海缆')));
 				const head = `<div class="map-tip"><div class="title">`
 					+ `<span class=\"pill\" style=\"${typePillStyle}\">${this.t('海缆')}</span>`
 					+ `${lineName}${ownLabel ? `<span class=\"pill\" style=\"${ownPillStyle}\">${ownLabel}</span>` : ''}</div>`
@@ -4101,15 +4111,15 @@ new Vue({
 				const cables = (detail.cables || lp.cables || []);
 				const chips = cables.map(cb => {
 					const name = this.normalizeText(cb.name || '');
-					const safeName = name.replace(/\"/g, '&quot;').replace(/"/g, '&quot;');
-					const idAttr = cb.id ? ` data-id="${cb.id}"` : '';
+					const safeName = this.escapeHtml(name);
+					const idAttr = cb.id ? ` data-id="${this.escapeHtml(cb.id)}"` : '';
 					const checked = (this.landingTooltip && Array.isArray(this.landingTooltip.selectedCableIds)) ? this.landingTooltip.selectedCableIds.map(String).includes(String(cb.id || cb.name)) : true;
 					return `<div class="chip"${idAttr} data-name="${safeName}" style="cursor:default;">
                                 <label style="display:inline-flex;align-items:center;gap:6px;">
                                     <input type="checkbox" ${checked ? 'checked' : ''} data-action="toggle-cable-select"${idAttr} data-name="${safeName}">
                                     <span class="name">${safeName}</span>
                                 </label>
-								<span class="meta">${cb.rfs_year || '-'}${cb.is_planned ? ` · ${this.t('规划中')}` : ''}</span>
+								<span class="meta">${this.escapeHtml(cb.rfs_year || '-')}${cb.is_planned ? ` · ${this.t('规划中')}` : ''}</span>
                             </div>`;
 				}).join('');
 				const coord = Array.isArray(p.value) ? p.value : lp.coords || [];
@@ -4117,13 +4127,13 @@ new Vue({
 				const lat = isFinite(coord[1]) ? Number(coord[1]).toFixed(2) : '-';
 				const count = (detail.cables && detail.cables.length) || (lp.cables && lp.cables.length) || 0;
 				const langPref = this.getItemLang('landing', lp.id || lp.name || '');
-				const country = this.displayCountryLabel(lp.country || detail.country || detail.国家 || detail.COUNTRY || detail.Country, langPref);
+				const country = this.escapeHtml(this.displayCountryLabel(lp.country || detail.country || detail.国家 || detail.COUNTRY || detail.Country, langPref));
 				const contVal = lp.continent || detail.continent || lp.continentMacro || detail.continentMacro || '';
 				const continentText = this.displayContinents(contVal) || this.displayMacroRegion(contVal) || '-';
 				const directionText = this.displayDirection(lp.direction || detail.direction);
 				const ownership = lp.ownership || '';
 				const isTbd = (lp.is_tbd !== undefined) ? (lp.is_tbd ? '是' : '否') : (detail.is_tbd !== undefined ? (detail.is_tbd ? '是' : '否') : '-');
-				const idText = lp.id || detail.id || '-';
+				const idText = this.escapeHtml(lp.id || detail.id || '-');
 				const isLanding = !!lp && !!lp.id;
 				const landingIdStr = lp.id ? String(lp.id) : '';
 				const expanded = count > 4 && landingIdStr && this.mapTooltipLandingExpandedId === landingIdStr;
@@ -4134,13 +4144,14 @@ new Vue({
 						+ `<div class="row"><div class="key">${this.t('经纬度')}</div><div class="val">Lon ${lon}, Lat ${lat}</div></div>`
 						+ `</div>`;
 				}
-				const titleName = this.displayLandingName(lp);
+				const rawTitleName = this.displayLandingName(lp);
+				const titleName = this.escapeHtml(rawTitleName);
 				const color = this.ownershipColor(ownership || '非权益');
 				const typePillStyle = this.styleStr(this.typeThemeStyle('landing'));
 				const ownPillStyle = this.styleStr(this.pillThemeStyle('landing', { ownership }));
-				const safeLandingName = this.normalizeText(titleName).replace(/"/g, '&quot;');
+				const safeLandingName = this.escapeHtml(this.normalizeText(rawTitleName));
 				const tipAttrs = [];
-				if (landingIdStr) tipAttrs.push(`data-lp-id="${landingIdStr}"`);
+				if (landingIdStr) tipAttrs.push(`data-lp-id="${this.escapeHtml(landingIdStr)}"`);
 				if (safeLandingName) tipAttrs.push(`data-lp-name="${safeLandingName}"`);
 				const tipAttrStr = tipAttrs.length ? ` ${tipAttrs.join(' ')}` : '';
 				const live = renderLiveDistance();
@@ -4160,11 +4171,11 @@ new Vue({
 					+ `<button class="inline-btn" data-action="select-none-associated"${tipAttrStr} style="margin-left:8px;">${this.t('全不选')}</button>`
 					+ `</div></div>`
 					+ (chips ? `<div class="${chipWrapCls2}">${chips}</div>` : '')
-					+ (count > 4 && !expanded ? `<div class="more" data-action="expand-chip-list" data-landing-id="${landingIdStr}">${this.t('还有')} ${count - 4} ${this.t('条…')}</div>` : '')
+					+ (count > 4 && !expanded ? `<div class="more" data-action="expand-chip-list" data-landing-id="${this.escapeHtml(landingIdStr)}">${this.t('还有')} ${count - 4} ${this.t('条…')}</div>` : '')
 					+ (needFetch ? `<div class="loading">${this.t('详情加载中…')}</div>` : '');
 				return head + wrapExtra(extra) + `</div>`;
 			}
-			return `<div class="map-tip"><div class="title">${p.name || ''}</div></div>`;
+			return `<div class="map-tip"><div class="title">${this.escapeHtml(p.name || '')}</div></div>`;
 		},
 		buildLandingPointsForMap(linesFallback) {
 			// 地图层登陆站点：默认仅显示权益（自建/合建/租用），可通过 landingOwnershipOnly 切换
@@ -5857,18 +5868,20 @@ new Vue({
 		async onFaultApiModeChange() {
 			if (this.modeSwitching) return;
 			this.modeSwitching = true;
-			const key = this.faultApiMode;
-			const isLocal = key === 'local-docker' || key === 'local-xampp';
-			const ok = await this.verifyModeReachable(key, { alertOnFail: isLocal });
-			if (!ok) {
-				const rollback = this.faultApiModePrev || 'oa';
-				this.faultApiMode = rollback;
+			try {
+				const key = this.faultApiMode;
+				const isLocal = key === 'local-docker' || key === 'local-xampp';
+				const ok = await this.verifyModeReachable(key, { alertOnFail: isLocal });
+				if (!ok) {
+					const rollback = this.faultApiModePrev || 'oa';
+					this.faultApiMode = rollback;
+					return;
+				}
+				this.faultApiModePrev = key;
+				await this.loadFaults();
+			} finally {
 				this.modeSwitching = false;
-				return;
 			}
-			this.faultApiModePrev = key;
-			await this.loadFaults();
-			this.modeSwitching = false;
 		},
 		normalizeFaultsFromApi(payload) {
 			try {
