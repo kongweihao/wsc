@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Check for sensitive IP addresses
+        run: |
+          if grep -n \
+            -E '(192\.168\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' \
+            js/app.js index.html seacable_data/*.js 2>/dev/null; then
+            echo "ERROR: Internal IP addresses found in application source. Please replace with placeholder values."
+            exit 1
+          fi
+          echo "No internal IP addresses found in application source."
+
+      - name: Verify key files exist
+        run: |
+          test -f index.html && echo "index.html OK"
+          test -f js/app.js && echo "js/app.js OK"
+          test -f css/app.css && echo "css/app.css OK"
+          test -f package.json && echo "package.json OK"

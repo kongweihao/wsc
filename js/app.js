@@ -23,9 +23,9 @@ new Vue({
 			focusMode: 'none',
 			focusedLanding: null,
 			faultApiModes: [
-				{ key: 'oa', name: 'OA模式', host: '192.168.20.184', autoDetect: true },
+				{ key: 'oa', name: 'OA模式', host: 'your-oa-server', autoDetect: true },
 				{ key: 'prod', name: '生产网本地84模式', host: '127.0.0.1:808', autoDetect: true },
-				{ key: 'prod', name: '生产网83模式', host: '172.16.45.83', autoDetect: false },
+				{ key: 'prod', name: '生产网83模式', host: 'your-prod-server', autoDetect: false },
 				{ key: 'local-docker', name: '本地docker模式', host: '127.0.0.1:808', autoDetect: false },
 				{ key: 'local-xampp', name: '本地xampp模式', host: '127.0.0.1', autoDetect: false }
 			],
