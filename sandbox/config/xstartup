@@ -1,0 +1,13 @@
+#!/bin/bash
+# VNC xstartup — 启动 XFCE4 桌面
+# 该脚本在沙盒用户(sandbox)的 VNC 会话中执行
+
+# 设置分辨率与颜色深度
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+
+# 启动 D-Bus
+export $(dbus-launch)
+
+# 启动 XFCE4 桌面环境
+exec startxfce4 &
